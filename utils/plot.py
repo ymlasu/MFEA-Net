@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 def plot_elasticfield(img,ftitle='Title',fname=None,limit1=None,limit2=None):
     '''Plot the 2D pytorch tensor field (assume there are two fields, with shape of 2 x n x n)'''
 
+    img = img.cpu()
     fig = plt.figure()
     fig.suptitle(ftitle)
 
@@ -34,6 +35,7 @@ def plot_elasticfield(img,ftitle='Title',fname=None,limit1=None,limit2=None):
 def plot_thermalfield(field, ftitle='Title'):
     '''Default is to plot the solution field'''
 
+    field = field.cpu()
     fig = plt.figure()
     fig.suptitle(ftitle)
 
