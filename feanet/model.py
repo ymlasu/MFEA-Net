@@ -3,13 +3,12 @@ import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
 import pacnet.pac as pac
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-#device = torch.device('cpu')
 
 class PACFEANet(nn.Module):
-    def __init__(self, mode='thermal', kernel_size=3):
+    def __init__(self, device, mode='thermal', kernel_size=3):
         super(PACFEANet, self).__init__()
         self.mode = mode
+        self.device = device
         self.h = 1. # pixel size
         self.km, self.ku, self.kf = 1, 1, 1 # thermal problem
         if(self.mode == 'elastic'):
@@ -40,14 +39,14 @@ class PACFEANet(nn.Module):
                         k12.clone(), k11.clone(), k14.clone(), k13.clone(), 
                         k13.clone(), k14.clone(), k11.clone(), k12.clone(), 
                         k14.clone(), k13.clone(), k12.clone(), k11.clone()), dim=1)
-        return torch.unsqueeze(K, dim=2).to(device)
+        return torch.unsqueeze(K, dim=2).to(self.device)
 
     def elastic_elements(self, m):
         K11 = self.elastic_element11(m)
         K12 = self.elastic_element12(m)
         K21 = self.elastic_element21(m)
         K22 = self.elastic_element22(m)
-        return torch.stack((K11, K12, K21, K22), dim=2).to(device) # create a new dimension
+        return torch.stack((K11, K12, K21, K22), dim=2).to(self.device) # create a new dimension
 
     def elastic_element11(self, m):
         # generate the layer of element stiffness matrix K11
@@ -63,7 +62,7 @@ class PACFEANet(nn.Module):
                          k12.clone(), k11.clone(), k14.clone(), k13.clone(), 
                          k13.clone(), k14.clone(), k11.clone(), k12.clone(), 
                          k14.clone(), k13.clone(), k12.clone(), k11.clone()), dim=1) # cat in old dimension
-        return K11.to(device)
+        return K11
 
     def elastic_element12(self, m):
         # generate the layer of element stiffness matrix K12
@@ -77,7 +76,7 @@ class PACFEANet(nn.Module):
                          -k12.clone(), -k11.clone(), k12.clone(), k11.clone(), 
                          -k11.clone(), -k12.clone(), k11.clone(), k12.clone(), 
                          k12.clone(), k11.clone(), -k12.clone(), -k11.clone()), dim=1)
-        return K12.to(device)
+        return K12
 
     def elastic_element21(self, m):
         # generate the layer of element stiffness matrix K21
@@ -92,7 +91,7 @@ class PACFEANet(nn.Module):
                          -k11.clone(), -k12.clone(), k11.clone(), k12.clone(), 
                          k12.clone(), k11.clone(), -k12.clone(), -k11.clone()), dim=1)
 
-        return K21.to(device)
+        return K21
 
     def elastic_element22(self, m):
         # generate the layer of element stiffness matrix K22
@@ -108,11 +107,11 @@ class PACFEANet(nn.Module):
                          k12.clone(), k11.clone(), k14.clone(), k13.clone(), 
                          k13.clone(), k14.clone(), k11.clone(), k12.clone(), 
                          k14.clone(), k13.clone(), k12.clone(), k11.clone()), dim=1)
-        return K22.to(device)
+        return K22
 
     def bodyforce_element(self, m):
         bs, _, hs, ws = m.shape
-        el = torch.zeros(size=(bs, 16, self.kf, hs, ws)).to(device)
+        el = torch.zeros(size=(bs, 16, self.kf, hs, ws)).to(self.device)
         el[:,0,:,:,:], el[:,1,:,:,:], el[:,2,:,:,:], el[:,3,:,:,:]     = 4/9, 2/9, 1/9, 2/9
         el[:,4,:,:,:], el[:,5,:,:,:], el[:,6,:,:,:], el[:,7,:,:,:]     = 2/9, 4/9, 2/9, 1/9
         el[:,8,:,:,:], el[:,9,:,:,:], el[:,10,:,:,:], el[:,11,:,:,:]   = 1/9, 2/9, 4/9, 2/9
@@ -121,7 +120,7 @@ class PACFEANet(nn.Module):
 
     def traction_element(self, m, pos='top'):
         bs, _, hs, ws = m.shape
-        el = torch.zeros(size=(bs, 16, self.kf, hs, ws)).to(device)
+        el = torch.zeros(size=(bs, 16, self.kf, hs, ws)).to(self.device)
         if(pos == 'top'):
             el[:,10,:,:,:], el[:,11,:,:,:] = 2/3, 1/3
             el[:,14,:,:,:], el[:,15,:,:,:] = 1/3, 2/3
@@ -167,6 +166,15 @@ class PACFEANet(nn.Module):
             traction_elements_bottom = self.traction_element(material_input, 'bottom')
             self.t_kernels, _ = self.sac_tnet.compute_kernel(traction_elements_bottom)
 
+        u_clone = self.input_clone(u, self.kf)
+        f_sac = self.sac_Knet(u_clone, None, self.K_kernels)
+
+        temp1 = self.group_Knet(f_sac)
+        temp2 = self.sac_fnet(f, None, self.f_kernels)
+        temp3 = self.sac_tnet(t, None, self.t_kernels)*t_idx
+        return temp2+temp3-temp1
+
+        '''
         self.u_clone = self.input_clone(u, self.kf)
         self.f_sac = self.sac_Knet(self.u_clone, None, self.K_kernels)
 
@@ -174,3 +182,4 @@ class PACFEANet(nn.Module):
         self.temp2 = self.sac_fnet(f, None, self.f_kernels)
         self.temp3 = self.sac_tnet(t, None, self.t_kernels)*t_idx
         return self.temp2+self.temp3-self.temp1
+        '''

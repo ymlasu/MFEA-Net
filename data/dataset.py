@@ -5,11 +5,10 @@ import torch
 from torch.utils.data import Dataset
 from torchvision.transforms import ToTensor
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-#device = torch.device('cpu')
 class ThermalDataSet(Dataset):
-    def __init__(self, h5file, transform=None, target_transform=None):
+    def __init__(self, h5file, device, transform=None, target_transform=None):
         h5 = h5py.File(h5file, 'r')
+        self.device = device
         self.dirich_idx = np.array(h5['dirich_idx'], dtype=np.double)
         self.dirich_value = np.array(h5['dirich_value'], dtype=np.double)
         self.traction_idx = np.array(h5['neumann_idx'], dtype=np.double)
@@ -25,13 +24,13 @@ class ThermalDataSet(Dataset):
         return self.source.shape[0]
 
     def __getitem__(self, idx):
-        source_tensor = torch.flip(self.totensor(self.source[idx]), dims=[1]).to(device)
-        solution_tensor = torch.flip(self.totensor(self.solution[idx]), dims=[1]).to(device)
-        material_tensor = torch.flip(self.totensor(self.material[idx]), dims=[1]).to(device)
-        traction_value_tensor = torch.flip(self.totensor(self.traction_value[idx]), dims=[1]).to(device)
-        traction_idx_tensor = torch.flip(self.totensor(self.traction_idx[idx]), dims=[1]).to(device)
-        dirich_value_tensor = torch.flip(self.totensor(self.dirich_value[idx]), dims=[1]).to(device)
-        dirich_idx_tensor = torch.flip(self.totensor(self.dirich_idx[idx]), dims=[1]).to(device)
+        source_tensor = torch.flip(self.totensor(self.source[idx]), dims=[1]).to(self.device)
+        solution_tensor = torch.flip(self.totensor(self.solution[idx]), dims=[1]).to(self.device)
+        material_tensor = torch.flip(self.totensor(self.material[idx]), dims=[1]).to(self.device)
+        traction_value_tensor = torch.flip(self.totensor(self.traction_value[idx]), dims=[1]).to(self.device)
+        traction_idx_tensor = torch.flip(self.totensor(self.traction_idx[idx]), dims=[1]).to(self.device)
+        dirich_value_tensor = torch.flip(self.totensor(self.dirich_value[idx]), dims=[1]).to(self.device)
+        dirich_idx_tensor = torch.flip(self.totensor(self.dirich_idx[idx]), dims=[1]).to(self.device)
         if self.transform:
             source_tensor = self.transform(source_tensor)
             solution_tensor = self.transform(solution_tensor)
@@ -47,8 +46,9 @@ class ElasticityDataSet(Dataset):
     Dataset stores dirich_idx, dirich_value, traction_idx, traction_value, material, body_force, solution
     Tensor shape will become (2, h, w) after tranformed to be tensor
     '''
-    def __init__(self, h5file, transform=None, target_transform=None):
+    def __init__(self, h5file, device, transform=None, target_transform=None):
         h5 = h5py.File(h5file, 'r')
+        self.device = device
         self.dirich_idx = np.array(h5['dirich_idx'], dtype=np.double)
         self.dirich_value = np.array(h5['dirich_value'], dtype=np.double)
         self.traction_idx = np.array(h5['traction_idx'], dtype=np.double)
@@ -64,13 +64,13 @@ class ElasticityDataSet(Dataset):
         return self.body_force.shape[0]
 
     def __getitem__(self, idx):
-        body_force_tensor = torch.flip(self.totensor(self.body_force[idx]), dims=[1]).to(device)
-        solution_tensor = torch.flip(self.totensor(self.solution[idx]), dims=[1]).to(device)
-        material_tensor = torch.flip(self.totensor(self.material[idx]), dims=[1]).to(device)
-        traction_value_tensor = torch.flip(self.totensor(self.traction_value[idx]), dims=[1]).to(device)
-        traction_idx_tensor = torch.flip(self.totensor(self.traction_idx[idx]), dims=[1]).to(device)
-        dirich_value_tensor = torch.flip(self.totensor(self.dirich_value[idx]), dims=[1]).to(device)
-        dirich_idx_tensor = torch.flip(self.totensor(self.dirich_idx[idx]), dims=[1]).to(device)
+        body_force_tensor = torch.flip(self.totensor(self.body_force[idx]), dims=[1]).to(self.device)
+        solution_tensor = torch.flip(self.totensor(self.solution[idx]), dims=[1]).to(self.device)
+        material_tensor = torch.flip(self.totensor(self.material[idx]), dims=[1]).to(self.device)
+        traction_value_tensor = torch.flip(self.totensor(self.traction_value[idx]), dims=[1]).to(self.device)
+        traction_idx_tensor = torch.flip(self.totensor(self.traction_idx[idx]), dims=[1]).to(self.device)
+        dirich_value_tensor = torch.flip(self.totensor(self.dirich_value[idx]), dims=[1]).to(self.device)
+        dirich_idx_tensor = torch.flip(self.totensor(self.dirich_idx[idx]), dims=[1]).to(self.device)
         if self.transform:
             body_force_tensor = self.transform(body_force_tensor)
             solution_tensor = self.transform(solution_tensor)

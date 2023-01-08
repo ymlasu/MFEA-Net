@@ -35,6 +35,10 @@ def plot_elasticfield(img,ftitle='Title',fname=None,limit1=None,limit2=None):
 def plot_thermalfield(field, ftitle='Title'):
     '''Default is to plot the solution field'''
 
+    field_size = field.size()
+    if(len(field_size) == 3):
+        field = field.reshape(field_size[1:])
+        
     field = field.cpu()
     fig = plt.figure()
     fig.suptitle(ftitle)

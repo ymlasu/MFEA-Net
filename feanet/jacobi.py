@@ -8,7 +8,8 @@ class JacobiBlock():
         FEANet: neural network model to output residual
         h : pixel size
     """
-    def __init__(self, net, h, mode='thermal'):
+    def __init__(self, net, h, device, mode='thermal'):
+        self.device = device
         self.net = net # initialize the nn network
         self.mode = mode
         self.kf = 1 # thermal problem
@@ -43,9 +44,10 @@ class JacobiBlock():
             Matrix describing the domain: desired values for boundary points 0.0 elsewhere.
         """
         if(self.d_mat == None):
-            self.d_mat = self.compute_diagonal_matrix()
+            self.net(h, u0, f, t, t_idx, m)
+            self.d_mat = self.compute_diagonal_matrix().to(self.device)
 
         u = self.reset_boundary(u0, d, d_idx)
         residual = self.net(h, u, f, t, t_idx, m)
         u_new = self.omega/self.d_mat*residual + u
-        return self.reset_boundary(u_new, d, d_idx), residual
+        return self.reset_boundary(u_new, d, d_idx)
