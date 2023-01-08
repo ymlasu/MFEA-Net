@@ -1,0 +1,5 @@
+data/elasticity_planestress/*.h5
+data/thermal/*.h5
+data/__pycache__
+feanet/__pycache__
+utils/__pycache__

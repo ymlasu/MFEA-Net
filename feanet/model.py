@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
-import pacnet.pac as pac
+import feanet.pac as pac
 
 class PACFEANet(nn.Module):
     def __init__(self, device, mode='thermal', kernel_size=3):
@@ -169,6 +169,7 @@ class PACFEANet(nn.Module):
         u_clone = self.input_clone(u, self.kf)
         f_sac = self.sac_Knet(u_clone, None, self.K_kernels)
 
+        #print(f.shape, self.f_kernels.shape)
         temp1 = self.group_Knet(f_sac)
         temp2 = self.sac_fnet(f, None, self.f_kernels)
         temp3 = self.sac_tnet(t, None, self.t_kernels)*t_idx
