@@ -142,20 +142,19 @@ class PACFEANet(nn.Module):
             u = torch.cat((u, initial_u), dim=1)
         return u
 
-    def forward(self, h, u, f, t, t_idx, material_input):
-        # for elasticity problems, material_input has two channels, E and v
-        # h is pixel size 
-        # u is initial solution
-        # f is body force of unit volume, with kf channels
-        # t is traction map, with kf channels
-        # t_idx is traction boundary index, 1 if boundary pixel, 0 else
+    def calc_KU(self, u, material_input):        
         if((self.K_kernels == None) or (not torch.equal(material_input, self.materials))):
             stiffness = self.thermal_elements(material_input)
             if(self.mode == 'elastic'):
                 stiffness = self.elastic_elements(material_input) 
             self.K_kernels, _ = self.sac_Knet.compute_kernel(stiffness)
-            self.materials = material_input.clone()
+            self.materials = material_input
         
+        u_clone = self.input_clone(u, self.kf)
+        f_sac = self.sac_Knet(u_clone, None, self.K_kernels)
+        return self.group_Knet(f_sac)
+
+    def calc_F(self, h, f, t, t_idx, material_input):
         if((self.f_kernels == None) or (h != self.h)):
             self.h = h
             bodyforce_elements = self.bodyforce_element(material_input)
@@ -165,16 +164,29 @@ class PACFEANet(nn.Module):
             self.h = h
             traction_elements_bottom = self.traction_element(material_input, 'bottom')
             self.t_kernels, _ = self.sac_tnet.compute_kernel(traction_elements_bottom)
-
-        u_clone = self.input_clone(u, self.kf)
-        f_sac = self.sac_Knet(u_clone, None, self.K_kernels)
-
-        #print(f.shape, self.f_kernels.shape)
-        temp1 = self.group_Knet(f_sac)
+        
         temp2 = self.sac_fnet(f, None, self.f_kernels)
         temp3 = self.sac_tnet(t, None, self.t_kernels)*t_idx
-        return temp2+temp3-temp1
+        return temp2+temp3
 
+
+    def forward(self, term_KU=None, term_F=None, h=None, u=None, f=None, t=None, t_idx=None, material_input=None):
+        # for elasticity problems, material_input has two channels, E and v
+        # h is pixel size 
+        # u is initial solution
+        # f is body force of unit volume, with kf channels
+        # t is traction map, with kf channels
+        # t_idx is traction boundary index, 1 if boundary pixel, 0 else
+        self.term_KU = term_KU
+        if(term_KU == None):
+            self.term_KU = self.calc_KU(u, material_input)
+        
+        self.term_F = term_F
+        if(term_F == None):
+            self.term_F = self.calc_F(h, f, t, t_idx, material_input)
+        
+        return self.term_F-self.term_KU
+            
         '''
         self.u_clone = self.input_clone(u, self.kf)
         self.f_sac = self.sac_Knet(self.u_clone, None, self.K_kernels)
