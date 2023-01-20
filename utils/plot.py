@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-def plot_elasticfield(img,ftitle='Title',fname=None,limit1=None,limit2=None):
+def plot_elasticfield(img,ftitle='Title',f1title='Field-1',f2title='Field-2',fname=None,limit1=None,limit2=None):
     '''Plot the 2D pytorch tensor field (assume there are two fields, with shape of 2 x n x n)'''
 
     img = img.cpu()
@@ -14,8 +14,8 @@ def plot_elasticfield(img,ftitle='Title',fname=None,limit1=None,limit2=None):
     else:
         im1 = plt.imshow(img[0], vmin=limit1[0],vmax=limit1[1])
     plt.axis('off')
-    plt.title('Field-1')
-    plt.colorbar(im1)
+    plt.title(f1title)
+    plt.colorbar(im1, fraction=0.045)
 
     fig.add_subplot(1,2,2)
     if(limit2 is None):
@@ -23,8 +23,8 @@ def plot_elasticfield(img,ftitle='Title',fname=None,limit1=None,limit2=None):
     else:
         im2 = plt.imshow(img[1],vmin=limit2[0],vmax=limit2[1])
     plt.axis('off')
-    plt.title('Field-2')
-    plt.colorbar(im2)
+    plt.title(f2title)
+    plt.colorbar(im2, fraction=0.045)
 
     plt.tight_layout()
 
