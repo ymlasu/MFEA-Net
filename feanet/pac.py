@@ -3,10 +3,13 @@ Copyright (C) 2019 NVIDIA Corporation.  All rights reserved.
 Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode).
 
 ====================
-2022/12/10 by Changyu Meng
+28-Sep-2023 by Changyu Meng
+Added twonodeKernel2d function for linear two-node element kernel calculation
+
+10-Dec-2022 by Changyu Meng
 Clone from: https://github.com/NVlabs/pacnet/tree/th14
 Removed the pyinn code lines.
-Added quadKernel2d function for linear element kernel calculation
+Added quadKernel2d function for linear quad element kernel calculation
 """
 
 from __future__ import absolute_import
@@ -39,6 +42,7 @@ except ImportError:
     pass
 '''
 
+
 def _neg_idx(idx):
     return None if idx == 0 else -idx
 
@@ -67,25 +71,30 @@ def nd2col(input_nd, kernel_size, stride=1, padding=0, output_padding=0, dilatio
           :math:`L_{out} = (L_{in} - 1) * stride - 2 * padding + dilation * (kernel_size - 1) + 1 + output_padding` for transposed
     """
     n_dims = len(input_nd.shape[2:])
-    kernel_size = (kernel_size,) * n_dims if isinstance(kernel_size, Number) else kernel_size
+    kernel_size = (kernel_size,) * \
+        n_dims if isinstance(kernel_size, Number) else kernel_size
     stride = (stride,) * n_dims if isinstance(stride, Number) else stride
     padding = (padding,) * n_dims if isinstance(padding, Number) else padding
-    output_padding = (output_padding,) * n_dims if isinstance(output_padding, Number) else output_padding
-    dilation = (dilation,) * n_dims if isinstance(dilation, Number) else dilation
+    output_padding = (output_padding,) * \
+        n_dims if isinstance(output_padding, Number) else output_padding
+    dilation = (dilation,) * \
+        n_dims if isinstance(dilation, Number) else dilation
 
     if transposed:
         assert n_dims == 2, 'Only 2D is supported for fractional strides.'
         w_one = input_nd.new_ones(1, 1, 1, 1)
-        pad = [(k - 1) * d - p for (k, d, p) in zip(kernel_size, dilation, padding)]
+        pad = [(k - 1) * d - p for (k, d, p)
+               in zip(kernel_size, dilation, padding)]
         input_nd = F.conv_transpose2d(input_nd, w_one, stride=stride)
-        input_nd = F.pad(input_nd, (pad[1], pad[1] + output_padding[1], pad[0], pad[0] + output_padding[0]))
+        input_nd = F.pad(
+            input_nd, (pad[1], pad[1] + output_padding[1], pad[0], pad[0] + output_padding[0]))
         stride = _pair(1)
         padding = _pair(0)
 
     (bs, nch), in_sz = input_nd.shape[:2], input_nd.shape[2:]
     out_sz = tuple([((i + 2 * p - d * (k - 1) - 1) // s + 1)
                     for (i, k, d, p, s) in zip(in_sz, kernel_size, dilation, padding, stride)])
-    
+
     '''
     # Use PyINN if possible (about 15% faster) TODO confirm the speed-up
     if n_dims == 2 and dilation == 1 and has_pyinn and torch.cuda.is_available() and use_pyinn_if_possible:
@@ -102,13 +111,40 @@ def nd2col(input_nd, kernel_size, stride=1, padding=0, output_padding=0, dilatio
     return output
 
 
+def twonodeKernel2d(input, stride, padding, dilation):
+    '''
+    Kernel function definition for linear two-node FEA element (no need to create a pytorch autograd function)
+    Tensor index:  11, 12, 21, 22
+    Channel number: 0,  1,  2,  3
+    '''
+    _, _, _ = _pair(dilation), _pair(padding), _pair(stride)
+
+    bs, _, ks, in_h, in_w = input.shape
+
+    # calculate kernel components
+    K11 = input[:, 0, :, :, :].view(bs, ks, 1, 1, in_h, in_w).contiguous()
+    K12 = input[:, 1, :, :, :].view(bs, ks, 1, 1, in_h, in_w).contiguous()
+    K21 = input[:, 2, :, :, :].view(bs, ks, 1, 1, in_h, in_w).contiguous()
+    K22 = input[:, 3, :, :, :].view(bs, ks, 1, 1, in_h, in_w).contiguous()
+    K_zero = torch.zeros_like(K11).contiguous()
+
+    # combine all kernel components together
+    row1 = torch.cat((K_zero, K21, K_zero), dim=3)
+    row2 = torch.cat((K21, K11+K22, K12), dim=3)
+    row3 = torch.cat((K_zero, K12, K_zero), dim=3)
+    # here the number of output channels is 1
+    output = torch.cat((row1, row2, row3), dim=2)
+
+    return output # shape (bs, 3, 3, in_h, in_w)
+
+
 def quadKernel2d(input, stride, padding, dilation):
     '''
     Kernel function definition for linear quad FEA element (no need to create a pytorch autograd function)
     Tensor index:  11, 12, 13, 14, 21, 22, 23, 24, 31, 32, 33, 34, 41, 42, 43, 44
     Channel number: 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15
     '''
-    assert (padding == (1,1))
+    assert (padding == (1, 1))
 
     fn_dilation = _pair(dilation)
     fn_padding = _pair(padding)
@@ -117,37 +153,59 @@ def quadKernel2d(input, stride, padding, dilation):
     bs, ch, ks, in_h, in_w = input.shape
 
     # unfold a material map, use a 2x2 window
-    window = (2,2)
-    out_h = (in_h + 2 * fn_padding[0] - fn_dilation[0] * (window[0] - 1) - 1) // fn_stride[0] + 1
-    out_w = (in_w + 2 * fn_padding[1] - fn_dilation[1] * (window[1] - 1) - 1) // fn_stride[1] + 1
-    cols = F.unfold(input.view(bs, ch*ks, in_h, in_w), window, fn_dilation, fn_padding, fn_stride)
+    window = (2, 2)
+    out_h = (in_h + 2 * fn_padding[0] - fn_dilation[0]
+             * (window[0] - 1) - 1) // fn_stride[0] + 1
+    out_w = (in_w + 2 * fn_padding[1] - fn_dilation[1]
+             * (window[1] - 1) - 1) // fn_stride[1] + 1
+    cols = F.unfold(input.view(bs, ch*ks, in_h, in_w), window,
+                    fn_dilation, fn_padding, fn_stride)
     cols = cols.view(bs, ch, ks, window[0], window[1], out_h, out_w)
-        
+
     # calculate kernel components
-    K24e4 = cols[:, 7, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K23e4 = cols[:, 6, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K21e4 = cols[:, 4, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K22e4 = cols[:, 5, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K14e3 = cols[:, 3, :, 0, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K13e3 = cols[:, 2, :, 0, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K11e3 = cols[:, 0, :, 0, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K12e3 = cols[:, 1, :, 0, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K44e2 = cols[:, 15, :, 1, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K43e2 = cols[:, 14, :, 1, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K41e2 = cols[:, 12, :, 1, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K42e2 = cols[:, 13, :, 1, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K34e1 = cols[:, 11, :, 1, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K33e1 = cols[:, 10, :, 1, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K31e1 = cols[:, 8, :, 1, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K32e1 = cols[:, 9, :, 1, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K24e4 = cols[:, 7, :, 0, 0, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K23e4 = cols[:, 6, :, 0, 0, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K21e4 = cols[:, 4, :, 0, 0, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K22e4 = cols[:, 5, :, 0, 0, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K14e3 = cols[:, 3, :, 0, 1, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K13e3 = cols[:, 2, :, 0, 1, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K11e3 = cols[:, 0, :, 0, 1, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K12e3 = cols[:, 1, :, 0, 1, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K44e2 = cols[:, 15, :, 1, 1, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K43e2 = cols[:, 14, :, 1, 1, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K41e2 = cols[:, 12, :, 1, 1, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K42e2 = cols[:, 13, :, 1, 1, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K34e1 = cols[:, 11, :, 1, 0, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K33e1 = cols[:, 10, :, 1, 0, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K31e1 = cols[:, 8, :, 1, 0, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K32e1 = cols[:, 9, :, 1, 0, :, :].view(
+        bs, ks, 1, 1, out_h, out_w).contiguous()
 
     # combine all kernel components together
     row1 = torch.cat((K24e4, K23e4 + K14e3, K13e3), dim=3)
-    row2 = torch.cat((K34e1 + K21e4, K11e3 + K22e4 + K33e1 + K44e2, K43e2 + K12e3), dim=3)
+    row2 = torch.cat((K34e1 + K21e4, K11e3 + K22e4 +
+                     K33e1 + K44e2, K43e2 + K12e3), dim=3)
     row3 = torch.cat((K31e1, K32e1 + K41e2, K42e2), dim=3)
-    output = torch.cat((row1, row2, row3), dim=2) # here the number of output channels is 1
+    # here the number of output channels is 1
+    output = torch.cat((row1, row2, row3), dim=2)
 
     return output
+
 
 class GaussKernel2dFn(Function):
     @staticmethod
@@ -157,12 +215,17 @@ class GaussKernel2dFn(Function):
         ctx.padding = _pair(padding)
         ctx.stride = _pair(stride)
         bs, ch, in_h, in_w = input.shape
-        out_h = (in_h + 2 * ctx.padding[0] - ctx.dilation[0] * (ctx.kernel_size[0] - 1) - 1) // ctx.stride[0] + 1
-        out_w = (in_w + 2 * ctx.padding[1] - ctx.dilation[1] * (ctx.kernel_size[1] - 1) - 1) // ctx.stride[1] + 1
-        cols = F.unfold(input, ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
-        cols = cols.view(bs, ch, ctx.kernel_size[0], ctx.kernel_size[1], out_h, out_w)
+        out_h = (in_h + 2 * ctx.padding[0] - ctx.dilation[0]
+                 * (ctx.kernel_size[0] - 1) - 1) // ctx.stride[0] + 1
+        out_w = (in_w + 2 * ctx.padding[1] - ctx.dilation[1]
+                 * (ctx.kernel_size[1] - 1) - 1) // ctx.stride[1] + 1
+        cols = F.unfold(input, ctx.kernel_size, ctx.dilation,
+                        ctx.padding, ctx.stride)
+        cols = cols.view(
+            bs, ch, ctx.kernel_size[0], ctx.kernel_size[1], out_h, out_w)
         center_y, center_x = ctx.kernel_size[0] // 2, ctx.kernel_size[1] // 2
-        feat_0 = cols.contiguous()[:, :, center_y:center_y + 1, center_x:center_x + 1, :, :]
+        feat_0 = cols.contiguous(
+        )[:, :, center_y:center_y + 1, center_x:center_x + 1, :, :]
         diff_sq = (cols - feat_0).pow(2)
         if not channel_wise:
             diff_sq = diff_sq.sum(dim=1, keepdim=True)
@@ -177,10 +240,13 @@ class GaussKernel2dFn(Function):
         input, output = ctx.saved_tensors
         bs, ch, in_h, in_w = input.shape
         out_h, out_w = output.shape[-2:]
-        cols = F.unfold(input, ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
-        cols = cols.view(bs, ch, ctx.kernel_size[0], ctx.kernel_size[1], out_h, out_w)
+        cols = F.unfold(input, ctx.kernel_size, ctx.dilation,
+                        ctx.padding, ctx.stride)
+        cols = cols.view(
+            bs, ch, ctx.kernel_size[0], ctx.kernel_size[1], out_h, out_w)
         center_y, center_x = ctx.kernel_size[0] // 2, ctx.kernel_size[1] // 2
-        feat_0 = cols.contiguous()[:, :, center_y:center_y + 1, center_x:center_x + 1, :, :]
+        feat_0 = cols.contiguous(
+        )[:, :, center_y:center_y + 1, center_x:center_x + 1, :, :]
         diff = cols - feat_0
         grad = -0.5 * grad_output * output
         grad_diff = grad.expand_as(cols) * (2 * diff)
@@ -198,7 +264,8 @@ class PacConv2dFn(Function):
     def forward(ctx, input, kernel, weight, bias=None, stride=1, padding=0, dilation=1, shared_filters=False):
         (bs, ch), in_sz = input.shape[:2], input.shape[2:]
         if kernel.size(1) > 1:
-            raise ValueError('Non-singleton channel is not allowed for kernel.')
+            raise ValueError(
+                'Non-singleton channel is not allowed for kernel.')
         ctx.input_size = in_sz
         ctx.in_ch = ch
         ctx.kernel_size = tuple(weight.shape[-2:])
@@ -207,10 +274,12 @@ class PacConv2dFn(Function):
         ctx.stride = _pair(stride)
         ctx.shared_filters = shared_filters
         ctx.save_for_backward(input if (ctx.needs_input_grad[1] or ctx.needs_input_grad[2]) else None,
-                              kernel if (ctx.needs_input_grad[0] or ctx.needs_input_grad[2]) else None,
+                              kernel if (
+                                  ctx.needs_input_grad[0] or ctx.needs_input_grad[2]) else None,
                               weight if (ctx.needs_input_grad[0] or ctx.needs_input_grad[1]) else None)
 
-        cols = F.unfold(input, ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
+        cols = F.unfold(input, ctx.kernel_size, ctx.dilation,
+                        ctx.padding, ctx.stride)
 
         in_mul_k = cols.view(bs, ch, *kernel.shape[2:]) * kernel
 
@@ -236,15 +305,19 @@ class PacConv2dFn(Function):
         if ctx.needs_input_grad[0] or ctx.needs_input_grad[1]:
             if ctx.shared_filters:
                 grad_in_mul_k = grad_output.view(bs, out_ch, 1, 1, out_sz[0], out_sz[1]) \
-                                * weight.view(ctx.kernel_size[0], ctx.kernel_size[1], 1, 1)
+                    * weight.view(ctx.kernel_size[0], ctx.kernel_size[1], 1, 1)
             else:
-                grad_in_mul_k = torch.einsum('iomn,ojkl->ijklmn', (grad_output, weight))
+                grad_in_mul_k = torch.einsum(
+                    'iomn,ojkl->ijklmn', (grad_output, weight))
         if ctx.needs_input_grad[1] or ctx.needs_input_grad[2]:
-            in_cols = F.unfold(input, ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
-            in_cols = in_cols.view(bs, in_ch, ctx.kernel_size[0], ctx.kernel_size[1], out_sz[0], out_sz[1])
+            in_cols = F.unfold(input, ctx.kernel_size,
+                               ctx.dilation, ctx.padding, ctx.stride)
+            in_cols = in_cols.view(
+                bs, in_ch, ctx.kernel_size[0], ctx.kernel_size[1], out_sz[0], out_sz[1])
         if ctx.needs_input_grad[0]:
             grad_im2col_output = grad_in_mul_k * kernel
-            grad_im2col_output = grad_im2col_output.view(bs, -1, out_sz[0] * out_sz[1])
+            grad_im2col_output = grad_im2col_output.view(
+                bs, -1, out_sz[0] * out_sz[1])
 
             grad_input = F.fold(grad_im2col_output,
                                 ctx.input_size[:2], ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
@@ -254,10 +327,13 @@ class PacConv2dFn(Function):
         if ctx.needs_input_grad[2]:
             in_mul_k = in_cols * kernel
             if ctx.shared_filters:
-                grad_weight = torch.einsum('ijmn,ijklmn->kl', (grad_output, in_mul_k))
-                grad_weight = grad_weight.view(1, 1, ctx.kernel_size[0], ctx.kernel_size[1]).contiguous()
+                grad_weight = torch.einsum(
+                    'ijmn,ijklmn->kl', (grad_output, in_mul_k))
+                grad_weight = grad_weight.view(
+                    1, 1, ctx.kernel_size[0], ctx.kernel_size[1]).contiguous()
             else:
-                grad_weight = torch.einsum('iomn,ijklmn->ojkl', (grad_output, in_mul_k))
+                grad_weight = torch.einsum(
+                    'iomn,ijklmn->ojkl', (grad_output, in_mul_k))
         if ctx.needs_input_grad[3]:
             grad_bias = torch.einsum('iomn->o', (grad_output,))
 
@@ -270,7 +346,8 @@ class PacConvTranspose2dFn(Function):
                 shared_filters=False):
         (bs, ch), in_sz = input.shape[:2], input.shape[2:]
         if kernel.size(1) > 1:
-            raise ValueError('Non-singleton channel is not allowed for kernel.')
+            raise ValueError(
+                'Non-singleton channel is not allowed for kernel.')
         ctx.in_ch = ch
         ctx.kernel_size = tuple(weight.shape[-2:])
         ctx.dilation = _pair(dilation)
@@ -279,13 +356,16 @@ class PacConvTranspose2dFn(Function):
         ctx.stride = _pair(stride)
         ctx.shared_filters = shared_filters
         ctx.save_for_backward(input if (ctx.needs_input_grad[1] or ctx.needs_input_grad[2]) else None,
-                              kernel if (ctx.needs_input_grad[0] or ctx.needs_input_grad[2]) else None,
+                              kernel if (
+                                  ctx.needs_input_grad[0] or ctx.needs_input_grad[2]) else None,
                               weight if (ctx.needs_input_grad[0] or ctx.needs_input_grad[1]) else None)
 
         w = input.new_ones((ch, 1, 1, 1))
         x = F.conv_transpose2d(input, w, stride=stride, groups=ch)
-        pad = [(k - 1) * d - p for (k, d, p) in zip(ctx.kernel_size, ctx.dilation, ctx.padding)]
-        x = F.pad(x, (pad[1], pad[1] + ctx.output_padding[1], pad[0], pad[0] + ctx.output_padding[0]))
+        pad = [(k - 1) * d - p for (k, d, p)
+               in zip(ctx.kernel_size, ctx.dilation, ctx.padding)]
+        x = F.pad(x, (pad[1], pad[1] + ctx.output_padding[1],
+                  pad[0], pad[0] + ctx.output_padding[0]))
 
         cols = F.unfold(x, ctx.kernel_size, ctx.dilation, _pair(0), _pair(1))
 
@@ -308,40 +388,49 @@ class PacConvTranspose2dFn(Function):
         grad_input = grad_kernel = grad_weight = grad_bias = None
         (bs, out_ch), out_sz = grad_output.shape[:2], grad_output.shape[2:]
         in_ch = ctx.in_ch
-        pad = [(k - 1) * d - p for (k, d, p) in zip(ctx.kernel_size, ctx.dilation, ctx.padding)]
+        pad = [(k - 1) * d - p for (k, d, p)
+               in zip(ctx.kernel_size, ctx.dilation, ctx.padding)]
         pad = [(p, p + op) for (p, op) in zip(pad, ctx.output_padding)]
 
         input, kernel, weight = ctx.saved_tensors
         if ctx.needs_input_grad[0] or ctx.needs_input_grad[1]:
             if ctx.shared_filters:
                 grad_in_mul_k = grad_output.view(bs, out_ch, 1, 1, out_sz[0], out_sz[1]) \
-                                * weight.view(ctx.kernel_size[0], ctx.kernel_size[1], 1, 1)
+                    * weight.view(ctx.kernel_size[0], ctx.kernel_size[1], 1, 1)
             else:
-                grad_in_mul_k = torch.einsum('iomn,jokl->ijklmn', (grad_output, weight))
+                grad_in_mul_k = torch.einsum(
+                    'iomn,jokl->ijklmn', (grad_output, weight))
         if ctx.needs_input_grad[1] or ctx.needs_input_grad[2]:
             w = input.new_ones((in_ch, 1, 1, 1))
             x = F.conv_transpose2d(input, w, stride=ctx.stride, groups=in_ch)
             x = F.pad(x, (pad[1][0], pad[1][1], pad[0][0], pad[0][1]))
-            in_cols = F.unfold(x, ctx.kernel_size, ctx.dilation, _pair(0), _pair(1))
-            in_cols = in_cols.view(bs, in_ch, ctx.kernel_size[0], ctx.kernel_size[1], out_sz[0], out_sz[1])
+            in_cols = F.unfold(x, ctx.kernel_size,
+                               ctx.dilation, _pair(0), _pair(1))
+            in_cols = in_cols.view(
+                bs, in_ch, ctx.kernel_size[0], ctx.kernel_size[1], out_sz[0], out_sz[1])
         if ctx.needs_input_grad[0]:
             grad_im2col_output = grad_in_mul_k * kernel
-            grad_im2col_output = grad_im2col_output.view(bs, -1, out_sz[0] * out_sz[1])
-            im2col_input_sz = [o + (k - 1) * d for (o, k, d) in zip(out_sz, ctx.kernel_size, ctx.dilation)]
+            grad_im2col_output = grad_im2col_output.view(
+                bs, -1, out_sz[0] * out_sz[1])
+            im2col_input_sz = [
+                o + (k - 1) * d for (o, k, d) in zip(out_sz, ctx.kernel_size, ctx.dilation)]
 
             grad_input = F.fold(grad_im2col_output,
                                 im2col_input_sz[:2], ctx.kernel_size, ctx.dilation, 0, 1)
-            grad_input = grad_input[:, :, pad[0][0]:-pad[0][1]:ctx.stride[0], pad[1][0]:-pad[1][1]:ctx.stride[1]]
+            grad_input = grad_input[:, :, pad[0][0]:-pad[0][1]                                    :ctx.stride[0], pad[1][0]:-pad[1][1]:ctx.stride[1]]
         if ctx.needs_input_grad[1]:
             grad_kernel = in_cols * grad_in_mul_k
             grad_kernel = grad_kernel.sum(dim=1, keepdim=True)
         if ctx.needs_input_grad[2]:
             in_mul_k = in_cols * kernel
             if ctx.shared_filters:
-                grad_weight = torch.einsum('ijmn,ijklmn->kl', (grad_output, in_mul_k))
-                grad_weight = grad_weight.view(1, 1, ctx.kernel_size[0], ctx.kernel_size[1]).contiguous()
+                grad_weight = torch.einsum(
+                    'ijmn,ijklmn->kl', (grad_output, in_mul_k))
+                grad_weight = grad_weight.view(
+                    1, 1, ctx.kernel_size[0], ctx.kernel_size[1]).contiguous()
             else:
-                grad_weight = torch.einsum('iomn,ijklmn->jokl', (grad_output, in_mul_k))
+                grad_weight = torch.einsum(
+                    'iomn,ijklmn->jokl', (grad_output, in_mul_k))
         if ctx.needs_input_grad[3]:
             grad_bias = torch.einsum('iomn->o', (grad_output,))
         return grad_input, grad_kernel, grad_weight, grad_bias, None, None, None, None, None
@@ -362,7 +451,8 @@ class PacPool2dFn(Function):
         ctx.save_for_backward(input if ctx.needs_input_grad[1] else None,
                               kernel if ctx.needs_input_grad[0] else None)
 
-        cols = F.unfold(input, ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
+        cols = F.unfold(input, ctx.kernel_size, ctx.dilation,
+                        ctx.padding, ctx.stride)
 
         output = cols.view(bs, ch, *kernel.shape[2:]) * kernel
         output = torch.einsum('ijklmn->ijmn', (output,))
@@ -376,15 +466,20 @@ class PacPool2dFn(Function):
         grad_input = grad_kernel = None
         (bs, ch), out_sz = grad_output.shape[:2], grad_output.shape[2:]
         if ctx.needs_input_grad[0]:
-            grad_im2col_output = torch.einsum('ijmn,izklmn->ijklmn', (grad_output, kernel))
-            grad_im2col_output = grad_im2col_output.view(bs, -1, out_sz[0] * out_sz[1])
+            grad_im2col_output = torch.einsum(
+                'ijmn,izklmn->ijklmn', (grad_output, kernel))
+            grad_im2col_output = grad_im2col_output.view(
+                bs, -1, out_sz[0] * out_sz[1])
 
             grad_input = F.fold(grad_im2col_output,
                                 ctx.input_size[:2], ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
         if ctx.needs_input_grad[1]:
-            cols = F.unfold(input, ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
-            cols = cols.view(bs, ch, ctx.kernel_size[0], ctx.kernel_size[1], out_sz[0], out_sz[1])
-            grad_kernel = torch.einsum('ijmn,ijklmn->ijklmn', (grad_output, cols))
+            cols = F.unfold(input, ctx.kernel_size,
+                            ctx.dilation, ctx.padding, ctx.stride)
+            cols = cols.view(
+                bs, ch, ctx.kernel_size[0], ctx.kernel_size[1], out_sz[0], out_sz[1])
+            grad_kernel = torch.einsum(
+                'ijmn,ijklmn->ijklmn', (grad_output, cols))
             if ctx.kernel_ch == 1:
                 grad_kernel = grad_kernel.sum(dim=1, keepdim=True)
 
@@ -420,18 +515,20 @@ def packernel2d(input, mask=None, kernel_size=0, stride=1, padding=0, output_pad
                           dilation=dilation, transposed=transposed)
             if not normalize_kernel:
                 norm = mask.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True) \
-                       / mask_pattern.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
+                    / mask_pattern.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
         else:
             mask = mask_pattern
 
     if transposed:
         stride = _pair(1)
-        padding = tuple((k - 1) * d // 2 for (k, d) in zip(kernel_size, dilation))
+        padding = tuple((k - 1) * d // 2 for (k, d)
+                        in zip(kernel_size, dilation))
 
     if native_impl:
         bs, k_ch, in_h, in_w = input.shape
 
-        x = nd2col(input, kernel_size, stride=stride, padding=padding, dilation=dilation)
+        x = nd2col(input, kernel_size, stride=stride,
+                   padding=padding, dilation=dilation)
         x = x.view(bs, k_ch, -1, *x.shape[-2:]).contiguous()
 
         if smooth_kernel_type == 'none':
@@ -443,7 +540,7 @@ def packernel2d(input, mask=None, kernel_size=0, stride=1, padding=0, output_pad
                               int(padding[1] - (kernel_size[1] - smooth_kernel_size[1]) / 2))
             crop = tuple(-1 * np.minimum(0, smooth_padding))
             input_for_kernel_crop = input.view(-1, 1, in_h, in_w)[:, :,
-                                    crop[0]:_neg_idx(crop[0]), crop[1]:_neg_idx(crop[1])]
+                                                                  crop[0]:_neg_idx(crop[0]), crop[1]:_neg_idx(crop[1])]
             smoothed = F.conv2d(input_for_kernel_crop, smooth_kernel,
                                 stride=stride, padding=tuple(np.maximum(0, smooth_padding)))
             feat_0 = smoothed.view(bs, k_ch, 1, *x.shape[-2:])
@@ -455,7 +552,8 @@ def packernel2d(input, mask=None, kernel_size=0, stride=1, padding=0, output_pad
         if not channel_wise:
             x = torch.sum(x, dim=1, keepdim=True)
         if kernel_type == 'gaussian':
-            x = torch.exp_(x.mul_(-0.5))  # TODO profiling for identifying the culprit of 5x slow down
+            # TODO profiling for identifying the culprit of 5x slow down
+            x = torch.exp_(x.mul_(-0.5))
             # x = torch.exp(-0.5 * x)
         elif kernel_type.startswith('inv_'):
             epsilon = 1e-4
@@ -463,12 +561,16 @@ def packernel2d(input, mask=None, kernel_size=0, stride=1, padding=0, output_pad
                 + torch.pow(x + epsilon, 0.5 * inv_lambda.view(1, -1, 1, 1, 1))
         else:
             raise ValueError()
-        output = x.view(*(x.shape[:2] + tuple(kernel_size) + x.shape[-2:])).contiguous()
-    elif(kernel_type == 'gaussian'):
+        output = x.view(
+            *(x.shape[:2] + tuple(kernel_size) + x.shape[-2:])).contiguous()
+    elif (kernel_type == 'gaussian'):
         assert (smooth_kernel_type == 'none')
-        output = GaussKernel2dFn.apply(input, kernel_size, stride, padding, dilation, channel_wise)
-    elif(kernel_type == 'quad'):
+        output = GaussKernel2dFn.apply(
+            input, kernel_size, stride, padding, dilation, channel_wise)
+    elif (kernel_type == 'quad'):
         output = quadKernel2d(input, stride, padding, dilation)
+    elif (kernel_type == 'two_node'):
+        output = twonodeKernel2d(input, stride, padding, dilation)
 
     if mask is not None:
         output = output * mask  # avoid numerical issue on masked positions
@@ -496,18 +598,22 @@ def pacconv2d(input, kernel, weight, bias=None, stride=1, padding=0, dilation=1,
 
     if native_impl:
         # im2col on input
-        im_cols = nd2col(input, kernel_size, stride=stride, padding=padding, dilation=dilation)
+        im_cols = nd2col(input, kernel_size, stride=stride,
+                         padding=padding, dilation=dilation)
 
         # main computation
         if shared_filters:
-            output = torch.einsum('ijklmn,zykl->ijmn', (im_cols * kernel, weight))
+            output = torch.einsum('ijklmn,zykl->ijmn',
+                                  (im_cols * kernel, weight))
         else:
-            output = torch.einsum('ijklmn,ojkl->iomn', (im_cols * kernel, weight))
+            output = torch.einsum('ijklmn,ojkl->iomn',
+                                  (im_cols * kernel, weight))
 
         if bias is not None:
             output += bias.view(1, -1, 1, 1)
     else:
-        output = PacConv2dFn.apply(input, kernel, weight, bias, stride, padding, dilation, shared_filters)
+        output = PacConv2dFn.apply(
+            input, kernel, weight, bias, stride, padding, dilation, shared_filters)
 
     return output
 
@@ -524,8 +630,10 @@ def pacconv_transpose2d(input, kernel, weight, bias=None, stride=1, padding=0, o
         ch = input.shape[1]
         w = input.new_ones((ch, 1, 1, 1))
         x = F.conv_transpose2d(input, w, stride=stride, groups=ch)
-        pad = [(kernel_size[i] - 1) * dilation[i] - padding[i] for i in range(2)]
-        x = F.pad(x, (pad[1], pad[1] + output_padding[1], pad[0], pad[0] + output_padding[0]))
+        pad = [(kernel_size[i] - 1) * dilation[i] - padding[i]
+               for i in range(2)]
+        x = F.pad(x, (pad[1], pad[1] + output_padding[1],
+                  pad[0], pad[0] + output_padding[0]))
         output = pacconv2d(x, kernel, weight.permute(1, 0, 2, 3), bias, dilation=dilation,
                            shared_filters=shared_filters, native_impl=True)
     else:
@@ -543,17 +651,22 @@ def pacpool2d(input, kernel, kernel_size, stride=1, padding=0, dilation=1, nativ
 
     if native_impl:
         bs, in_ch, in_h, in_w = input.shape
-        out_h = (in_h + 2 * padding[0] - dilation[0] * (kernel_size[0] - 1) - 1) // stride[0] + 1
-        out_w = (in_w + 2 * padding[1] - dilation[1] * (kernel_size[1] - 1) - 1) // stride[1] + 1
+        out_h = (in_h + 2 * padding[0] - dilation[0]
+                 * (kernel_size[0] - 1) - 1) // stride[0] + 1
+        out_w = (in_w + 2 * padding[1] - dilation[1]
+                 * (kernel_size[1] - 1) - 1) // stride[1] + 1
 
         # im2col on input
-        im_cols = nd2col(input, kernel_size, stride=stride, padding=padding, dilation=dilation)
+        im_cols = nd2col(input, kernel_size, stride=stride,
+                         padding=padding, dilation=dilation)
 
         # main computation
         im_cols *= kernel
-        output = im_cols.view(bs, in_ch, -1, out_h, out_w).sum(dim=2, keepdim=False)
+        output = im_cols.view(bs, in_ch, -1, out_h,
+                              out_w).sum(dim=2, keepdim=False)
     else:
-        output = PacPool2dFn.apply(input, kernel, kernel_size, stride, padding, dilation)
+        output = PacPool2dFn.apply(
+            input, kernel, kernel_size, stride, padding, dilation)
 
     return output
 
@@ -582,7 +695,8 @@ class _PacConvNd(nn.Module):
         if any([k % 2 != 1 for k in kernel_size]):
             raise ValueError('kernel_size only accept odd numbers')
         if smooth_kernel_type.find('_') >= 0 and int(smooth_kernel_type[smooth_kernel_type.rfind('_') + 1:]) % 2 != 1:
-            raise ValueError('smooth_kernel_type only accept kernels of odd widths')
+            raise ValueError(
+                'smooth_kernel_type only accept kernels of odd widths')
         if shared_filters:
             assert in_channels == out_channels, 'when specifying shared_filters, number of channels should not change'
         if any([p > d * (k - 1) / 2 for (p, d, k) in zip(padding, dilation, kernel_size)]):
@@ -593,13 +707,17 @@ class _PacConvNd(nn.Module):
                 assert shared_filters
                 self.register_buffer('weight', torch.ones(1, 1, *kernel_size))
                 if self.filler == 'crf_pool':
-                    self.weight[(0, 0) + tuple(k // 2 for k in kernel_size)] = 0  # Eq.5, DenseCRF
+                    # Eq.5, DenseCRF
+                    self.weight[(0, 0) + tuple(k //
+                                               2 for k in kernel_size)] = 0
             elif shared_filters:
                 self.weight = Parameter(torch.Tensor(1, 1, *kernel_size))
             elif transposed:
-                self.weight = Parameter(torch.Tensor(in_channels, out_channels, *kernel_size))
+                self.weight = Parameter(torch.Tensor(
+                    in_channels, out_channels, *kernel_size))
             else:
-                self.weight = Parameter(torch.Tensor(out_channels, in_channels, *kernel_size))
+                self.weight = Parameter(torch.Tensor(
+                    out_channels, in_channels, *kernel_size))
             if bias:
                 self.bias = Parameter(torch.Tensor(out_channels))
             else:
@@ -609,7 +727,8 @@ class _PacConvNd(nn.Module):
             self.inv_lambda_init = float(kernel_type.split('_')[2])
             if self.channel_wise and kernel_type.find('_fixed') < 0:
                 if out_channels <= 0:
-                    raise ValueError('out_channels needed for channel_wise {}'.format(kernel_type))
+                    raise ValueError(
+                        'out_channels needed for channel_wise {}'.format(kernel_type))
                 inv_alpha = self.inv_alpha_init * torch.ones(out_channels)
                 inv_lambda = self.inv_lambda_init * torch.ones(out_channels)
             else:
@@ -621,26 +740,33 @@ class _PacConvNd(nn.Module):
             else:
                 self.register_buffer('inv_alpha', inv_alpha)
                 self.register_buffer('inv_lambda', inv_lambda)
-        #elif kernel_type != 'gaussian':
+        # elif kernel_type != 'gaussian':
         #    raise ValueError('kernel_type set to invalid value ({})'.format(kernel_type))
         if smooth_kernel_type.startswith('full_'):
             smooth_kernel_size = int(smooth_kernel_type.split('_')[-1])
-            self.smooth_kernel = Parameter(torch.Tensor(1, 1, *repeat(smooth_kernel_size, len(kernel_size))))
+            self.smooth_kernel = Parameter(torch.Tensor(
+                1, 1, *repeat(smooth_kernel_size, len(kernel_size))))
         elif smooth_kernel_type == 'gaussian':
             smooth_1d = torch.tensor([.25, .5, .25])
             smooth_kernel = smooth_1d
             for d in range(1, len(kernel_size)):
-                smooth_kernel = smooth_kernel * smooth_1d.view(-1, *repeat(1, d))
-            self.register_buffer('smooth_kernel', smooth_kernel.unsqueeze(0).unsqueeze(0))
+                smooth_kernel = smooth_kernel * \
+                    smooth_1d.view(-1, *repeat(1, d))
+            self.register_buffer(
+                'smooth_kernel', smooth_kernel.unsqueeze(0).unsqueeze(0))
         elif smooth_kernel_type.startswith('average_'):
             smooth_kernel_size = int(smooth_kernel_type.split('_')[-1])
-            smooth_1d = torch.tensor((1.0 / smooth_kernel_size,) * smooth_kernel_size)
+            smooth_1d = torch.tensor(
+                (1.0 / smooth_kernel_size,) * smooth_kernel_size)
             smooth_kernel = smooth_1d
             for d in range(1, len(kernel_size)):
-                smooth_kernel = smooth_kernel * smooth_1d.view(-1, *repeat(1, d))
-            self.register_buffer('smooth_kernel', smooth_kernel.unsqueeze(0).unsqueeze(0))
+                smooth_kernel = smooth_kernel * \
+                    smooth_1d.view(-1, *repeat(1, d))
+            self.register_buffer(
+                'smooth_kernel', smooth_kernel.unsqueeze(0).unsqueeze(0))
         elif smooth_kernel_type != 'none':
-            raise ValueError('smooth_kernel_type set to invalid value ({})'.format(smooth_kernel_type))
+            raise ValueError(
+                'smooth_kernel_type set to invalid value ({})'.format(smooth_kernel_type))
 
         self.reset_parameters()
 
@@ -658,9 +784,11 @@ class _PacConvNd(nn.Module):
                     self.bias.data.uniform_(-stdv, stdv)
             elif self.filler == 'linear':
                 effective_kernel_size = tuple(2 * s - 1 for s in self.stride)
-                pad = tuple(int((k - ek) // 2) for k, ek in zip(self.kernel_size, effective_kernel_size))
+                pad = tuple(int((k - ek) // 2)
+                            for k, ek in zip(self.kernel_size, effective_kernel_size))
                 assert self.transposed and self.in_channels == self.out_channels
-                assert all(k >= ek for k, ek in zip(self.kernel_size, effective_kernel_size))
+                assert all(k >= ek for k, ek in zip(
+                    self.kernel_size, effective_kernel_size))
                 w = 1.0
                 for i, (p, s, k) in enumerate(zip(pad, self.stride, self.kernel_size)):
                     d = len(pad) - i - 1
@@ -676,27 +804,32 @@ class _PacConvNd(nn.Module):
                     self.bias.data.fill_(0.0)
             elif self.filler in {'crf', 'crf_perturbed'}:
                 assert len(self.kernel_size) == 2 and self.kernel_size[0] == self.kernel_size[1] \
-                       and self.in_channels == self.out_channels
+                    and self.in_channels == self.out_channels
                 perturb_range = 0.001
                 n_classes = self.in_channels
-                gauss = np_gaussian_2d(self.kernel_size[0]) * self.kernel_size[0] * self.kernel_size[0]
+                gauss = np_gaussian_2d(
+                    self.kernel_size[0]) * self.kernel_size[0] * self.kernel_size[0]
                 gauss[self.kernel_size[0] // 2, self.kernel_size[1] // 2] = 0
                 if self.shared_filters:
                     self.weight.data[0, 0, :] = torch.tensor(gauss)
                 else:
                     compat = 1.0 - np.eye(n_classes, dtype=np.float32)
-                    self.weight.data[:] = torch.tensor(compat.reshape(n_classes, n_classes, 1, 1) * gauss)
+                    self.weight.data[:] = torch.tensor(
+                        compat.reshape(n_classes, n_classes, 1, 1) * gauss)
                 if self.filler == 'crf_perturbed':
-                    self.weight.data.add_((torch.rand_like(self.weight.data) - 0.5) * perturb_range)
+                    self.weight.data.add_(
+                        (torch.rand_like(self.weight.data) - 0.5) * perturb_range)
                 if self.bias is not None:
                     self.bias.data.fill_(0.0)
             else:
-                raise ValueError('Initialization method ({}) not supported.'.format(self.filler))
+                raise ValueError(
+                    'Initialization method ({}) not supported.'.format(self.filler))
         if hasattr(self, 'inv_alpha') and isinstance(self.inv_alpha, Parameter):
             self.inv_alpha.data.fill_(self.inv_alpha_init)
             self.inv_lambda.data.fill_(self.inv_lambda_init)
         if hasattr(self, 'smooth_kernel') and isinstance(self.smooth_kernel, Parameter):
-            self.smooth_kernel.data.fill_(1.0 / np.multiply.reduce(self.smooth_kernel.shape))
+            self.smooth_kernel.data.fill_(
+                1.0 / np.multiply.reduce(self.smooth_kernel.shape))
 
     def extra_repr(self):
         s = ('{in_channels}, {out_channels}, kernel_size={kernel_size}'
@@ -755,9 +888,12 @@ class PacConv2d(_PacConvNd):
                            kernel_size=self.kernel_size, stride=self.stride, padding=self.padding,
                            dilation=self.dilation, kernel_type=self.kernel_type,
                            smooth_kernel_type=self.smooth_kernel_type,
-                           smooth_kernel=self.smooth_kernel if hasattr(self, 'smooth_kernel') else None,
-                           inv_alpha=self.inv_alpha if hasattr(self, 'inv_alpha') else None,
-                           inv_lambda=self.inv_lambda if hasattr(self, 'inv_lambda') else None,
+                           smooth_kernel=self.smooth_kernel if hasattr(
+                               self, 'smooth_kernel') else None,
+                           inv_alpha=self.inv_alpha if hasattr(
+                               self, 'inv_alpha') else None,
+                           inv_lambda=self.inv_lambda if hasattr(
+                               self, 'inv_lambda') else None,
                            channel_wise=False, normalize_kernel=self.normalize_kernel, transposed=False,
                            native_impl=self.native_impl)
 
@@ -806,9 +942,12 @@ class PacConvTranspose2d(_PacConvNd):
                            kernel_size=self.kernel_size, stride=self.stride, padding=self.padding,
                            output_padding=self.output_padding, dilation=self.dilation, kernel_type=self.kernel_type,
                            smooth_kernel_type=self.smooth_kernel_type,
-                           smooth_kernel=self.smooth_kernel if hasattr(self, 'smooth_kernel') else None,
-                           inv_alpha=self.inv_alpha if hasattr(self, 'inv_alpha') else None,
-                           inv_lambda=self.inv_lambda if hasattr(self, 'inv_lambda') else None,
+                           smooth_kernel=self.smooth_kernel if hasattr(
+                               self, 'smooth_kernel') else None,
+                           inv_alpha=self.inv_alpha if hasattr(
+                               self, 'inv_alpha') else None,
+                           inv_lambda=self.inv_lambda if hasattr(
+                               self, 'inv_lambda') else None,
                            channel_wise=False, normalize_kernel=self.normalize_kernel, transposed=True,
                            native_impl=self.native_impl)
 
@@ -857,9 +996,12 @@ class PacPool2d(_PacConvNd):
                            kernel_size=self.kernel_size, stride=self.stride, padding=self.padding,
                            dilation=self.dilation, kernel_type=self.kernel_type,
                            smooth_kernel_type=self.smooth_kernel_type,
-                           smooth_kernel=self.smooth_kernel if hasattr(self, 'smooth_kernel') else None,
-                           inv_alpha=self.inv_alpha if hasattr(self, 'inv_alpha') else None,
-                           inv_lambda=self.inv_lambda if hasattr(self, 'inv_lambda') else None,
+                           smooth_kernel=self.smooth_kernel if hasattr(
+                               self, 'smooth_kernel') else None,
+                           inv_alpha=self.inv_alpha if hasattr(
+                               self, 'inv_alpha') else None,
+                           inv_lambda=self.inv_lambda if hasattr(
+                               self, 'inv_lambda') else None,
                            channel_wise=self.channel_wise, normalize_kernel=self.normalize_kernel, transposed=False,
                            native_impl=self.native_impl)
 
@@ -870,7 +1012,8 @@ class PacPool2d(_PacConvNd):
 
         bs, in_ch, in_h, in_w = input_2d.shape
         if self.channel_wise and (kernel.shape[1] != in_ch):
-            raise ValueError('input and kernel must have the same number of channels when channel_wise=True')
+            raise ValueError(
+                'input and kernel must have the same number of channels when channel_wise=True')
         assert self.out_channels <= 0 or self.out_channels == in_ch
 
         output = pacpool2d(input_2d, kernel, self.kernel_size, self.stride, self.padding, self.dilation,

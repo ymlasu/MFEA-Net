@@ -34,7 +34,7 @@ class JacobiBlock():
             d_mat = torch.stack((dxx, dyy), dim=1)
         return d_mat
 
-    def jacobi_convolution(self, u, m, d, d_idx, term_KU=None, term_F=None, h=None, f=None, t=None, t_idx=None):
+    def jacobi_convolution(self, u, m, msk, d, d_idx, term_KU=None, term_F=None, h=None, f=None, t=None, t_idx=None):
         """ 
         Jacobi method iteration step defined as a convolution:
         u_new = omega/d_mat*residual + u 
@@ -44,10 +44,10 @@ class JacobiBlock():
             Matrix describing the domain: desired values for boundary points 0.0 elsewhere.
         """
         if(self.d_mat == None):
-            self.net(term_KU, term_F, h, u, f, t, t_idx, m)
+            self.net(term_KU, term_F, h, u, d_idx, f, t, t_idx, m, msk)
             self.d_mat = self.compute_diagonal_matrix().to(self.device)
 
         u = self.reset_boundary(u, d, d_idx)
-        residual = self.net(term_KU, term_F, h, u, f, t, t_idx, m)
+        residual = self.net(term_KU, term_F, h, u, d_idx, f, t, t_idx, m, msk)
         u_new = self.omega/self.d_mat*residual + u
         return self.reset_boundary(u_new, d, d_idx)

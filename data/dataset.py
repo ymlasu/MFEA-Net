@@ -9,6 +9,7 @@ class ThermalDataSet(Dataset):
     def __init__(self, h5file, device, transform=None, target_transform=None):
         h5 = h5py.File(h5file, 'r')
         self.device = device
+        self.mask = np.array(h5['mask'], dtype=np.double)
         self.dirich_idx = np.array(h5['dirich_idx'], dtype=np.double)
         self.dirich_value = np.array(h5['dirich_value'], dtype=np.double)
         self.traction_idx = np.array(h5['neumann_idx'], dtype=np.double)
@@ -31,6 +32,7 @@ class ThermalDataSet(Dataset):
         traction_idx_tensor = torch.flip(self.totensor(self.traction_idx[idx]), dims=[1]).to(self.device)
         dirich_value_tensor = torch.flip(self.totensor(self.dirich_value[idx]), dims=[1]).to(self.device)
         dirich_idx_tensor = torch.flip(self.totensor(self.dirich_idx[idx]), dims=[1]).to(self.device)
+        mask_tensor = torch.flip(self.totensor(self.mask[idx]), dims=[1]).to(self.device)
         if self.transform:
             source_tensor = self.transform(source_tensor)
             solution_tensor = self.transform(solution_tensor)
@@ -39,7 +41,8 @@ class ThermalDataSet(Dataset):
             traction_value_tensor = self.transform(traction_value_tensor)
             dirich_value_tensor = self.transform(dirich_value_tensor)
             dirich_idx_tensor = self.transform(dirich_idx_tensor)
-        return dirich_idx_tensor, dirich_value_tensor, traction_idx_tensor, traction_value_tensor, material_tensor, source_tensor, solution_tensor
+            mask_tensor = self.transform(mask_tensor)
+        return mask_tensor, dirich_idx_tensor, dirich_value_tensor, traction_idx_tensor, traction_value_tensor, material_tensor, source_tensor, solution_tensor
     
 class ElasticityDataSet(Dataset):
     '''

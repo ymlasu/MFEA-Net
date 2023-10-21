@@ -4,28 +4,33 @@ import numpy as np
 import torch.nn.functional as F
 import feanet.pac as pac
 
+
 class PACFEANet(nn.Module):
     def __init__(self, device, mode='thermal', kernel_size=3):
         super(PACFEANet, self).__init__()
         self.mode = mode
         self.device = device
-        self.h = 1. # pixel size
-        self.km, self.ku, self.kf = 1, 1, 1 # thermal problem
-        if(self.mode == 'elastic'):
+        self.h = 1.  # pixel size
+        self.km, self.ku, self.kf = 1, 1, 1  # thermal problem
+        if (self.mode == 'elastic'):
             self.km, self.ku, self.kf = 2, 2, 2
 
         self.K_kernels = None
         self.f_kernels = None
         self.t_kernels = None
         self.materials = None
-        
-        self.sac_Knet = pac.PacPool2d(out_channels=self.ku*self.kf, kernel_size=kernel_size, padding=1, kernel_type='quad')
-        self.sac_fnet = pac.PacPool2d(out_channels=self.kf,kernel_size=kernel_size, padding=1, kernel_type='quad') # body force
-        self.sac_tnet = pac.PacPool2d(out_channels=self.kf,kernel_size=kernel_size, padding=1, kernel_type='quad') # traction force
 
-        self.group_Knet = nn.Conv2d(in_channels=self.ku*self.kf, out_channels=self.kf, kernel_size=1, groups=self.ku, bias=False)
+        self.sac_Knet = pac.PacPool2d(
+            out_channels=self.ku*self.kf, kernel_size=kernel_size, padding=1, kernel_type='quad')
+        self.sac_fnet = pac.PacPool2d(
+            out_channels=self.kf, kernel_size=kernel_size, padding=1, kernel_type='quad')  # body force
+        self.sac_tnet = pac.PacPool2d(
+            out_channels=self.kf, kernel_size=kernel_size, padding=1, kernel_type='two_node')  # traction force
+
+        self.group_Knet = nn.Conv2d(
+            in_channels=self.ku*self.kf, out_channels=self.kf, kernel_size=1, groups=self.ku, bias=False)
         self.group_Knet.weight.data.fill_(1.0)
-        
+
     def thermal_elements(self, m):
         # only one material parameter, alpha
         alpha = m
@@ -35,10 +40,10 @@ class PACFEANet(nn.Module):
         k13 = -2./6.*alpha.contiguous()
         k14 = -1./6.*alpha.contiguous()
 
-        K = torch.cat(( k11.clone(), k12.clone(), k13.clone(), k14.clone(), 
-                        k12.clone(), k11.clone(), k14.clone(), k13.clone(), 
-                        k13.clone(), k14.clone(), k11.clone(), k12.clone(), 
-                        k14.clone(), k13.clone(), k12.clone(), k11.clone()), dim=1)
+        K = torch.cat((k11.clone(), k12.clone(), k13.clone(), k14.clone(),
+                       k12.clone(), k11.clone(), k14.clone(), k13.clone(),
+                       k13.clone(), k14.clone(), k11.clone(), k12.clone(),
+                       k14.clone(), k13.clone(), k12.clone(), k11.clone()), dim=1)
         return torch.unsqueeze(K, dim=2).to(self.device)
 
     def elastic_elements(self, m):
@@ -46,7 +51,8 @@ class PACFEANet(nn.Module):
         K12 = self.elastic_element12(m)
         K21 = self.elastic_element21(m)
         K22 = self.elastic_element22(m)
-        return torch.stack((K11, K12, K21, K22), dim=2).to(self.device) # create a new dimension
+        # create a new dimension
+        return torch.stack((K11, K12, K21, K22), dim=2).to(self.device)
 
     def elastic_element11(self, m):
         # generate the layer of element stiffness matrix K11
@@ -58,10 +64,10 @@ class PACFEANet(nn.Module):
         k13 = (E/16./(1-v*v)*(-4.+4./3*v)).contiguous()
         k14 = (E/16./(1-v*v)*8./3*v).contiguous()
 
-        K11 = torch.cat((k11.clone(), k12.clone(), k13.clone(), k14.clone(), 
-                         k12.clone(), k11.clone(), k14.clone(), k13.clone(), 
-                         k13.clone(), k14.clone(), k11.clone(), k12.clone(), 
-                         k14.clone(), k13.clone(), k12.clone(), k11.clone()), dim=1) # cat in old dimension
+        K11 = torch.cat((k11.clone(), k12.clone(), k13.clone(), k14.clone(),
+                         k12.clone(), k11.clone(), k14.clone(), k13.clone(),
+                         k13.clone(), k14.clone(), k11.clone(), k12.clone(),
+                         k14.clone(), k13.clone(), k12.clone(), k11.clone()), dim=1)  # cat in old dimension
         return K11
 
     def elastic_element12(self, m):
@@ -72,9 +78,9 @@ class PACFEANet(nn.Module):
         k11 = (E/8./(1-v)).contiguous()
         k12 = (E*(1-3*v)/8./(-1+v*v)).contiguous()
 
-        K12 = torch.cat((k11.clone(), k12.clone(), -k11.clone(), -k12.clone(), 
-                         -k12.clone(), -k11.clone(), k12.clone(), k11.clone(), 
-                         -k11.clone(), -k12.clone(), k11.clone(), k12.clone(), 
+        K12 = torch.cat((k11.clone(), k12.clone(), -k11.clone(), -k12.clone(),
+                         -k12.clone(), -k11.clone(), k12.clone(), k11.clone(),
+                         -k11.clone(), -k12.clone(), k11.clone(), k12.clone(),
                          k12.clone(), k11.clone(), -k12.clone(), -k11.clone()), dim=1)
         return K12
 
@@ -86,9 +92,9 @@ class PACFEANet(nn.Module):
         k11 = (E/8./(1-v)).contiguous()
         k12 = (E*(1-3*v)/8./(1-v*v)).contiguous()
 
-        K21 = torch.cat((k11.clone(), k12.clone(), -k11.clone(), -k12.clone(), 
-                         -k12.clone(), -k11.clone(), k12.clone(), k11.clone(), 
-                         -k11.clone(), -k12.clone(), k11.clone(), k12.clone(), 
+        K21 = torch.cat((k11.clone(), k12.clone(), -k11.clone(), -k12.clone(),
+                         -k12.clone(), -k11.clone(), k12.clone(), k11.clone(),
+                         -k11.clone(), -k12.clone(), k11.clone(), k12.clone(),
                          k12.clone(), k11.clone(), -k12.clone(), -k11.clone()), dim=1)
 
         return K21
@@ -103,36 +109,27 @@ class PACFEANet(nn.Module):
         k13 = (E*(3.-v)/12./(-1+v*v)).contiguous()
         k14 = (E*(3.+v)/12./(-1+v*v)).contiguous()
 
-        K22 = torch.cat((k11.clone(), k12.clone(), k13.clone(), k14.clone(), 
-                         k12.clone(), k11.clone(), k14.clone(), k13.clone(), 
-                         k13.clone(), k14.clone(), k11.clone(), k12.clone(), 
+        K22 = torch.cat((k11.clone(), k12.clone(), k13.clone(), k14.clone(),
+                         k12.clone(), k11.clone(), k14.clone(), k13.clone(),
+                         k13.clone(), k14.clone(), k11.clone(), k12.clone(),
                          k14.clone(), k13.clone(), k12.clone(), k11.clone()), dim=1)
         return K22
 
     def bodyforce_element(self, m):
         bs, _, hs, ws = m.shape
         el = torch.zeros(size=(bs, 16, self.kf, hs, ws)).to(self.device)
-        el[:,0,:,:,:], el[:,1,:,:,:], el[:,2,:,:,:], el[:,3,:,:,:]     = 4/9, 2/9, 1/9, 2/9
-        el[:,4,:,:,:], el[:,5,:,:,:], el[:,6,:,:,:], el[:,7,:,:,:]     = 2/9, 4/9, 2/9, 1/9
-        el[:,8,:,:,:], el[:,9,:,:,:], el[:,10,:,:,:], el[:,11,:,:,:]   = 1/9, 2/9, 4/9, 2/9
-        el[:,12,:,:,:], el[:,13,:,:,:], el[:,14,:,:,:], el[:,15,:,:,:] = 2/9, 1/9, 2/9, 4/9
+        el[:, 0, :, :, :], el[:, 1, :, :, :], el[:, 2, :, :, :], el[:, 3, :, :, :] = 4/9, 2/9, 1/9, 2/9
+        el[:, 4, :, :, :], el[:, 5, :, :, :], el[:, 6, :, :, :], el[:, 7, :, :, :] = 2/9, 4/9, 2/9, 1/9
+        el[:, 8, :, :, :], el[:, 9, :, :, :], el[:, 10, :, :, :], el[:, 11, :, :, :] = 1/9, 2/9, 4/9, 2/9
+        el[:, 12, :, :, :], el[:, 13, :, :, :], el[:, 14, :, :, :], el[:, 15, :, :, :] = 2/9, 1/9, 2/9, 4/9
         return self.h*self.h/4.*el
 
-    def traction_element(self, m, pos='top'):
+    def traction_element(self, m):
+        # create a new material map that only consider nodes
         bs, _, hs, ws = m.shape
-        el = torch.zeros(size=(bs, 16, self.kf, hs, ws)).to(self.device)
-        if(pos == 'top'):
-            el[:,10,:,:,:], el[:,11,:,:,:] = 2/3, 1/3
-            el[:,14,:,:,:], el[:,15,:,:,:] = 1/3, 2/3
-        elif(pos == 'bottom'):
-            el[:,0,:,:,:], el[:,1,:,:,:] = 2/3, 1/3
-            el[:,4,:,:,:], el[:,5,:,:,:] = 1/3, 2/3
-        elif(pos == 'left'):
-            el[:,0,:,:,:], el[:,3,:,:,:] =   2/3, 1/3
-            el[:,12,:,:,:], el[:,15,:,:,:] = 1/3, 2/3
-        elif(pos == 'right'):
-            el[:,5,:,:,:], el[:,6,:,:,:] =   2/3, 1/3
-            el[:,9,:,:,:], el[:,10,:,:,:] = 1/3, 2/3
+        el = torch.zeros(size=(bs, 4, self.kf, hs+1, ws+1)).to(self.device)
+        el[:, 0, :, :, :], el[:, 1, :, :, :] = 2/3, 1/3
+        el[:, 2, :, :, :], el[:, 3, :, :, :] = 1/3, 2/3
         return self.h/2.*el
 
     def input_clone(self, u, kf):
@@ -142,51 +139,52 @@ class PACFEANet(nn.Module):
             u = torch.cat((u, initial_u), dim=1)
         return u
 
-    def calc_KU(self, u, material_input):        
-        if((self.K_kernels == None) or (not torch.equal(material_input, self.materials))):
+    def calc_KU(self, u, material_input):
+        if ((self.K_kernels == None) or (not torch.equal(material_input, self.materials))):
             stiffness = self.thermal_elements(material_input)
-            if(self.mode == 'elastic'):
-                stiffness = self.elastic_elements(material_input) 
+            if (self.mode == 'elastic'):
+                stiffness = self.elastic_elements(material_input)
             self.K_kernels, _ = self.sac_Knet.compute_kernel(stiffness)
             self.materials = material_input
-        
+
         u_clone = self.input_clone(u, self.kf)
         f_sac = self.sac_Knet(u_clone, None, self.K_kernels)
         return self.group_Knet(f_sac)
 
     def calc_F(self, h, f, t, t_idx, material_input):
-        if((self.f_kernels == None) or (h != self.h)):
+        # f and t have no relationship with the material property, but do correlate with the mesh size
+        if ((self.f_kernels == None) or (h != self.h)):
             self.h = h
             bodyforce_elements = self.bodyforce_element(material_input)
-            self.f_kernels, _ = self.sac_fnet.compute_kernel(bodyforce_elements)
+            self.f_kernels, _ = self.sac_fnet.compute_kernel(
+                bodyforce_elements)
 
-        if((self.t_kernels == None) or (h != self.h)):
+        if ((self.t_kernels == None) or (h != self.h)):
             self.h = h
-            traction_elements_bottom = self.traction_element(material_input, 'bottom')
-            self.t_kernels, _ = self.sac_tnet.compute_kernel(traction_elements_bottom)
-        
+            traction_elements = self.traction_element(material_input)
+            self.t_kernels, _ = self.sac_tnet.compute_kernel(traction_elements)
+
         temp2 = self.sac_fnet(f, None, self.f_kernels)
         temp3 = self.sac_tnet(t, None, self.t_kernels)*t_idx
         return temp2+temp3
 
-
-    def forward(self, term_KU=None, term_F=None, h=None, u=None, f=None, t=None, t_idx=None, material_input=None):
-        # for elasticity problems, material_input has two channels, E and v
-        # h is pixel size 
+    def forward(self, term_KU=None, term_F=None, h=None, u=None, d_idx=None, f=None, t=None, t_idx=None, m=None, msk=None):
+        # for elasticity problems, m(material_input) has two channels, E and v
+        # h is pixel size
         # u is initial solution
         # f is body force of unit volume, with kf channels
         # t is traction map, with kf channels
         # t_idx is traction boundary index, 1 if boundary pixel, 0 else
         self.term_KU = term_KU
-        if(term_KU == None):
-            self.term_KU = self.calc_KU(u, material_input)
-        
+        if (term_KU == None):
+            self.term_KU = self.calc_KU(u, m)
+
         self.term_F = term_F
-        if(term_F == None):
-            self.term_F = self.calc_F(h, f, t, t_idx, material_input)
-        
-        return self.term_F-self.term_KU
-            
+        if (term_F == None):
+            self.term_F = self.calc_F(h, f, t, t_idx, m)
+
+        return (self.term_F-self.term_KU)*d_idx*msk
+
         '''
         self.u_clone = self.input_clone(u, self.kf)
         self.f_sac = self.sac_Knet(self.u_clone, None, self.K_kernels)
