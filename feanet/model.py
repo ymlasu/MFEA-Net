@@ -25,7 +25,7 @@ class PACFEANet(nn.Module):
         self.sac_fnet = pac.PacPool2d(
             out_channels=self.kf, kernel_size=kernel_size, padding=1, kernel_type='quad')  # body force
         self.sac_tnet = pac.PacPool2d(
-            out_channels=self.kf, kernel_size=kernel_size, padding=1, kernel_type='two_node')  # traction force
+            out_channels=self.kf, kernel_size=kernel_size, padding=1, kernel_type='linear')  # traction force
 
         self.group_Knet = nn.Conv2d(
             in_channels=self.ku*self.kf, out_channels=self.kf, kernel_size=1, groups=self.ku, bias=False)
@@ -125,9 +125,9 @@ class PACFEANet(nn.Module):
         return self.h*self.h/4.*el
 
     def traction_element(self, m):
-        # create a new material map that only consider nodes
+        # create 1-D element
         bs, _, hs, ws = m.shape
-        el = torch.zeros(size=(bs, 4, self.kf, hs+1, ws+1)).to(self.device)
+        el = torch.zeros(size=(bs, 4, self.kf, hs, ws)).to(self.device)
         el[:, 0, :, :, :], el[:, 1, :, :, :] = 2/3, 1/3
         el[:, 2, :, :, :], el[:, 3, :, :, :] = 1/3, 2/3
         return self.h/2.*el
@@ -162,10 +162,10 @@ class PACFEANet(nn.Module):
         if ((self.t_kernels == None) or (h != self.h)):
             self.h = h
             traction_elements = self.traction_element(material_input)
-            self.t_kernels, _ = self.sac_tnet.compute_kernel(traction_elements)
+            self.t_kernels, _ = self.sac_tnet.compute_kernel(traction_elements) # output (bs, 3, l)
 
         temp2 = self.sac_fnet(f, None, self.f_kernels)
-        temp3 = self.sac_tnet(t, None, self.t_kernels)*t_idx
+        temp3 = self.sac_tnet(t, None, self.t_kernels)*t_idx 
         return temp2+temp3
 
     def forward(self, term_KU=None, term_F=None, h=None, u=None, d_idx=None, f=None, t=None, t_idx=None, m=None, msk=None):
