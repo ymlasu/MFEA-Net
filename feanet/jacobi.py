@@ -50,4 +50,4 @@ class JacobiBlock():
         u = self.reset_boundary(u, d, d_idx)
         residual = self.net(term_KU, term_F, h, u, d_idx, f, t, t_idx, m, msk)
         u_new = self.omega/self.d_mat*residual + u
-        return self.reset_boundary(u_new, d, d_idx)
+        return msk*self.reset_boundary(u_new, d, d_idx)

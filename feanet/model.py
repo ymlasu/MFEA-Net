@@ -24,7 +24,7 @@ class PACFEANet(nn.Module):
             out_channels=self.ku*self.kf, kernel_size=kernel_size, padding=1, kernel_type='quad')
         self.sac_fnet = pac.PacPool2d(
             out_channels=self.kf, kernel_size=kernel_size, padding=1, kernel_type='quad')  # body force
-        self.sac_tnet = pac.PacPool2d(
+        self.sac_tnet = pac.PacPool1d(
             out_channels=self.kf, kernel_size=kernel_size, padding=1, kernel_type='linear')  # traction force
 
         self.group_Knet = nn.Conv2d(
@@ -124,12 +124,12 @@ class PACFEANet(nn.Module):
         el[:, 12, :, :, :], el[:, 13, :, :, :], el[:, 14, :, :, :], el[:, 15, :, :, :] = 2/9, 1/9, 2/9, 4/9
         return self.h*self.h/4.*el
 
-    def traction_element(self, m):
+    def traction_element(self, t_conn):
         # create 1-D element
-        bs, _, hs, ws = m.shape
-        el = torch.zeros(size=(bs, 4, self.kf, hs, ws)).to(self.device)
-        el[:, 0, :, :, :], el[:, 1, :, :, :] = 2/3, 1/3
-        el[:, 2, :, :, :], el[:, 3, :, :, :] = 1/3, 2/3
+        bs, _, n_elem, n_node = t_conn.shape
+        el = torch.zeros(size=(bs, 4, self.kf, n_elem)).to(self.device)
+        el[:, 0, :, :], el[:, 1, :, :] = 2/3, 1/3
+        el[:, 2, :, :], el[:, 3, :, :] = 1/3, 2/3
         return self.h/2.*el
 
     def input_clone(self, u, kf):
@@ -151,24 +151,38 @@ class PACFEANet(nn.Module):
         f_sac = self.sac_Knet(u_clone, None, self.K_kernels)
         return self.group_Knet(f_sac)
 
-    def calc_F(self, h, f, t, t_idx, material_input):
-        # f and t have no relationship with the material property, but do correlate with the mesh size
+    def calc_bodyforce(self, h, f, material_input):
+        # bodyforce is related to mesh size
         if ((self.f_kernels == None) or (h != self.h)):
             self.h = h
             bodyforce_elements = self.bodyforce_element(material_input)
             self.f_kernels, _ = self.sac_fnet.compute_kernel(
                 bodyforce_elements)
-
+        return self.sac_fnet(f, None, self.f_kernels)
+        
+    def calc_neumannbc(self, h, t, t_idx, t_conn):
         if ((self.t_kernels == None) or (h != self.h)):
             self.h = h
-            traction_elements = self.traction_element(material_input)
-            self.t_kernels, _ = self.sac_tnet.compute_kernel(traction_elements) # output (bs, 3, l)
+            traction_elements = self.traction_element(t_conn)
+            self.t_kernels, _ = self.sac_tnet.compute_kernel(traction_elements) # output (bs, ks, 3, l)
+        # get the neumann boundary node list
+        bs,ks,nn_elem,_ = t_conn.shape
+        self.neumann_node = torch.zeros((bs,ks,nn_elem+1),dtype=torch.int64)
+        self.neumann_node[:,:,:-1] = t_conn[:,:,:,0]
+        self.neumann_node[:,:,-1] = t_conn[:,:,-1,1]
+        # get the 1-D neumann boundary value
+        bs,ks,hs,ws = t.shape
+        t_flat = t.view(bs,ks,hs*ws)
+        # perform 1-D convolution
+        t_conv = self.sac_tnet(t_flat[self.neumann_node], None, self.t_kernels)
+        # convert back to neumann boundary map
+        t_flat[self.neumann_node] = t_conv
+        return t_flat.view(bs,ks,hs,ws)
 
-        temp2 = self.sac_fnet(f, None, self.f_kernels)
-        temp3 = self.sac_tnet(t, None, self.t_kernels)*t_idx 
-        return temp2+temp3
+    def calc_F(self, h, f, t, t_idx, t_conn, material_input):
+        return self.calc_bodyforce(h, f, material_input)+self.calc_neumannbc(h, t, t_idx, t_conn)
 
-    def forward(self, term_KU=None, term_F=None, h=None, u=None, d_idx=None, f=None, t=None, t_idx=None, m=None, msk=None):
+    def forward(self, term_KU=None, term_F=None, h=None, u=None, d_idx=None, f=None, t=None, t_idx=None, t_conn=None, m=None, msk=None):
         # for elasticity problems, m(material_input) has two channels, E and v
         # h is pixel size
         # u is initial solution
@@ -181,7 +195,7 @@ class PACFEANet(nn.Module):
 
         self.term_F = term_F
         if (term_F == None):
-            self.term_F = self.calc_F(h, f, t, t_idx, m)
+            self.term_F = self.calc_F(h, f, t, t_idx, t_conn, m)
 
         return (self.term_F-self.term_KU)*d_idx*msk
 

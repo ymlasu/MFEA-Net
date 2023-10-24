@@ -8,6 +8,9 @@ Created PacPool1d for 1D finite element analysis
 Created pacpool1d, packernel1d
 Added linearKernel1d function for linear two-node element kernel calculation
 
+28-Sep-2023 by Changyu Meng
+Added twonodeKernel2d function for linear two-node element kernel calculation
+
 10-Dec-2022 by Changyu Meng
 Clone from: https://github.com/NVlabs/pacnet/tree/th14
 Removed the pyinn code lines.
@@ -116,6 +119,40 @@ def nd2col(input_nd, kernel_size, stride=1, padding=0, output_padding=0, dilatio
 def linearKernel1d(input, stride, padding, dilation):
     '''
     Kernel function definition for linear two-node FEA element (no need to create a pytorch autograd function)
+    The input is a 1-dimensional element array
+    Tensor index:  11, 12, 21, 22
+    Channel number: 0,  1,  2,  3
+    '''
+
+    fn_dilation = _pair(dilation)
+    fn_padding = _pair(padding)
+    fn_stride = _pair(stride)
+
+    bs, ch, ks, in_l = input.shape
+
+    # unfold a material map, use a window with size of 2
+    window = 2
+    out_l = (in_l + 2 * fn_padding[0] - fn_dilation[0]
+             * (window - 1) - 1) // fn_stride[0] + 1
+    input = F.pad(input, pad=(fn_padding[0],fn_padding[0]))
+    cols = input.unfold(3, window, 1)
+    cols = cols.view(bs, ch, ks, out_l, window)
+
+    # calculate kernel components
+    K11e2 = cols[:, 0, :, :, 1].view(bs, ks, 1, out_l).contiguous()
+    K12e2 = cols[:, 1, :, :, 1].view(bs, ks, 1, out_l).contiguous()
+    K21e1 = cols[:, 2, :, :, 0].view(bs, ks, 1, out_l).contiguous()
+    K22e1 = cols[:, 3, :, :, 0].view(bs, ks, 1, out_l).contiguous()
+
+    # combine all kernel components together
+    output = torch.cat((K21e1, K11e2+K22e1, K12e2), dim=2)
+
+    return output # shape (bs, ks, 3, out_l)
+
+
+def twonodeKernel2d(input, stride, padding, dilation):
+    '''
+    Kernel function definition for linear two-node FEA element (no need to create a pytorch autograd function)
     Tensor index:  11, 12, 21, 22
     Channel number: 0,  1,  2,  3
     '''
@@ -138,10 +175,10 @@ def linearKernel1d(input, stride, padding, dilation):
     cols = cols.view(bs, ch, ks, window[0], window[1], out_h, out_w)
 
     # calculate kernel components
-    K11 = input[:, 0, :, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K12 = input[:, 1, :, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K21 = input[:, 2, :, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K22 = input[:, 3, :, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K11 = cols[:, 0, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K12 = cols[:, 1, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K21 = cols[:, 2, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K22 = cols[:, 3, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
     K_zero = torch.zeros_like(K11).contiguous()
 
     # combine all kernel components together
@@ -151,8 +188,7 @@ def linearKernel1d(input, stride, padding, dilation):
     # here the number of output channels is 1
     output = torch.cat((row1, row2, row3), dim=2)
 
-    return output # shape (bs, 3, 3, in_h, in_w)
-
+    return output # shape (bs, ks, 3, 3, in_h, in_w)
 
 def quadKernel2d(input, stride, padding, dilation):
     '''
@@ -453,53 +489,28 @@ class PacConvTranspose2dFn(Function):
 
 
 class PacPool1dFn(Function):
+    '''Note: didn't implement the backward computation yet'''
     @staticmethod
     def forward(ctx, input, kernel, kernel_size, stride=1, padding=0, dilation=1):
         (bs, ch), in_sz = input.shape[:2], input.shape[2:]
         if kernel.size(1) > 1 and kernel.size(1) != ch:
             raise ValueError('Incompatible input and kernel sizes.')
         ctx.input_size = in_sz
-        ctx.kernel_size = kernel_size
+        ctx.kernel_size = _pair(kernel_size)
         ctx.kernel_ch = kernel.size(1)
         ctx.dilation = dilation
-        ctx.padding = padding
+        ctx.padding = _pair(padding)
         ctx.stride = stride
         ctx.save_for_backward(input if ctx.needs_input_grad[1] else None,
                               kernel if ctx.needs_input_grad[0] else None)
 
-        cols = F.unfold(input, ctx.kernel_size, ctx.dilation,
-                        ctx.padding, ctx.stride)
-
+        input = F.pad(input, pad=ctx.padding)
+        cols = input.unfold(3, ctx.kernel_size[0], 1)
         output = cols.view(bs, ch, *kernel.shape[2:]) * kernel
-        output = torch.einsum('ijklmn->ijmn', (output,))
+        output = torch.einsum('ijkm->ijm', (output,))
 
-        return output.clone()  # TODO check whether a .clone() is needed here
+        return output.clone() 
 
-    @staticmethod
-    @once_differentiable
-    def backward(ctx, grad_output):
-        input, kernel = ctx.saved_tensors
-        grad_input = grad_kernel = None
-        (bs, ch), out_sz = grad_output.shape[:2], grad_output.shape[2:]
-        if ctx.needs_input_grad[0]:
-            grad_im2col_output = torch.einsum(
-                'ijmn,izklmn->ijklmn', (grad_output, kernel))
-            grad_im2col_output = grad_im2col_output.view(
-                bs, -1, out_sz[0] * out_sz[1])
-
-            grad_input = F.fold(grad_im2col_output,
-                                ctx.input_size[:2], ctx.kernel_size, ctx.dilation, ctx.padding, ctx.stride)
-        if ctx.needs_input_grad[1]:
-            cols = F.unfold(input, ctx.kernel_size,
-                            ctx.dilation, ctx.padding, ctx.stride)
-            cols = cols.view(
-                bs, ch, ctx.kernel_size[0], ctx.kernel_size[1], out_sz[0], out_sz[1])
-            grad_kernel = torch.einsum(
-                'ijmn,ijklmn->ijklmn', (grad_output, cols))
-            if ctx.kernel_ch == 1:
-                grad_kernel = grad_kernel.sum(dim=1, keepdim=True)
-
-        return grad_input, grad_kernel, None, None, None, None
     
 class PacPool2dFn(Function):
     @staticmethod
@@ -555,10 +566,10 @@ def packernel1d(input, mask=None, kernel_size=0, stride=1, padding=0, output_pad
                 kernel_type='linear', smooth_kernel_type='none', smooth_kernel=None, inv_alpha=None, inv_lambda=None,
                 channel_wise=False, normalize_kernel=False, transposed=False, native_impl=False):
     kernel_size = _pair(kernel_size)
-    dilation = _pair(dilation)
-    padding = _pair(padding)
-    output_padding = _pair(output_padding)
-    stride = _pair(stride)
+    dilation = dilation
+    padding = padding
+    output_padding = output_padding
+    stride = stride
     output_mask = False if mask is None else True
     norm = None
 
@@ -566,37 +577,18 @@ def packernel1d(input, mask=None, kernel_size=0, stride=1, padding=0, output_pad
         mask = torch.tensor(mask, dtype=input.dtype, device=input.device)
 
     if transposed:
-        in_sz = tuple(int((o - op - 1 - (k - 1) * d + 2 * p) // s) + 1 for (o, k, s, p, op, d) in
-                      zip(input.shape[-2:], kernel_size, stride, padding, output_padding, dilation))
-    else:
-        in_sz = input.shape[-2:]
+        print("Warning! the transposed function is not implemented yet for 1d")
+        pass
 
     if mask is not None or normalize_kernel:
-        mask_pattern = input.new_ones(1, 1, *in_sz)
-        mask_pattern = nd2col(mask_pattern, kernel_size, stride=stride, padding=padding, output_padding=output_padding,
-                              dilation=dilation, transposed=transposed)
-        if mask is not None:
-            mask = nd2col(mask, kernel_size, stride=stride, padding=padding, output_padding=output_padding,
-                          dilation=dilation, transposed=transposed)
-            if not normalize_kernel:
-                norm = mask.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True) \
-                    / mask_pattern.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
-        else:
-            mask = mask_pattern
-
-    if transposed:
-        stride = _pair(1)
-        padding = tuple((k - 1) * d // 2 for (k, d)
-                        in zip(kernel_size, dilation))
+        print("Warning! the mask with normalize_kernel is not implemented yet for 1d")
+        pass
 
     if (kernel_type == 'linear'):
         output = linearKernel1d(input, stride, padding, dilation)
 
     if mask is not None:
         output = output * mask  # avoid numerical issue on masked positions
-
-    if normalize_kernel:
-        norm = output.sum(dim=2, keepdim=True).sum(dim=3, keepdim=True)
 
     if norm is not None:
         empty_mask = (norm == 0)
@@ -692,6 +684,8 @@ def packernel2d(input, mask=None, kernel_size=0, stride=1, padding=0, output_pad
             input, kernel_size, stride, padding, dilation, channel_wise)
     elif (kernel_type == 'quad'):
         output = quadKernel2d(input, stride, padding, dilation)
+    elif (kernel_type == 'two_node'):
+        output = twonodeKernel2d(input, stride, padding, dilation)
 
     if mask is not None:
         output = output * mask  # avoid numerical issue on masked positions
@@ -766,16 +760,15 @@ def pacconv_transpose2d(input, kernel, weight, bias=None, stride=1, padding=0, o
 
 def pacpool1d(input, kernel, kernel_size, stride=1, padding=0, dilation=1, native_impl=False):
     kernel_size = _pair(kernel_size)
-    stride = _pair(stride)
-    padding = _pair(padding)
-    dilation = _pair(dilation)
+    stride = stride
+    padding = padding
+    dilation = dilation
 
     if native_impl:
         print("Warning: native_impl is not implemented yet.")
         pass
     else:
-        output = PacPool1dFn.apply(
-            input, kernel, kernel_size, stride, padding, dilation)
+        output = PacPool1dFn.apply(input, kernel, kernel_size, stride, padding, dilation)
 
     return output
 
@@ -1141,7 +1134,7 @@ class PacPool2d(_PacConvNd):
                            channel_wise=self.channel_wise, normalize_kernel=self.normalize_kernel, transposed=False,
                            native_impl=self.native_impl)
 
-    def forward(self, input_2d, input_for_kernel, kernel=None, mask=None):
+    def forward(self, input_2d, input_for_kernel=None, kernel=None, mask=None):
         output_mask = None
         if kernel is None:
             kernel, output_mask = self.compute_kernel(input_for_kernel, mask)
