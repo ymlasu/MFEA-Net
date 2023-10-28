@@ -139,26 +139,26 @@ class PACFEANet(nn.Module):
             u = torch.cat((u, initial_u), dim=1)
         return u
 
-    def calc_KU(self, u, material_input):
-        if ((self.K_kernels == None) or (not torch.equal(material_input, self.materials))):
-            stiffness = self.thermal_elements(material_input)
+    def calc_KU(self, u, m, msk):
+        if ((self.K_kernels == None) or (not torch.equal(m, self.materials))):
+            stiffness = self.thermal_elements(m)
             if (self.mode == 'elastic'):
-                stiffness = self.elastic_elements(material_input)
-            self.K_kernels, _ = self.sac_Knet.compute_kernel(stiffness)
-            self.materials = material_input
+                stiffness = self.elastic_elements(m)
+            self.K_kernels = self.sac_Knet.compute_kernel(stiffness) # (bs, ks, 3, 3, h_node, w_node)
+            self.mask = msk.unsqueeze(2).unsqueeze(3).repeat(1, 1, 3, 3, 1, 1) # (bs, ks, 3, 3, h_node, w_node)
+            self.materials = m
 
         u_clone = self.input_clone(u, self.kf)
-        f_sac = self.sac_Knet(u_clone, None, self.K_kernels)
+        f_sac = self.sac_Knet(u_clone, None, self.K_kernels*self.mask)
         return self.group_Knet(f_sac)
 
-    def calc_bodyforce(self, h, f, material_input):
+    def calc_bodyforce(self, h, f, m):
         # bodyforce is related to mesh size
         if ((self.f_kernels == None) or (h != self.h)):
             self.h = h
-            bodyforce_elements = self.bodyforce_element(material_input)
-            self.f_kernels, _ = self.sac_fnet.compute_kernel(
-                bodyforce_elements)
-        return self.sac_fnet(f, None, self.f_kernels)
+            bodyforce_elements = self.bodyforce_element(m)
+            self.f_kernels = self.sac_fnet.compute_kernel(bodyforce_elements)
+        return self.sac_fnet(f, None, self.f_kernels*self.mask)
         
     def calc_neumannbc(self, h, t, t_idx, t_conn):
         if ((self.t_kernels == None) or (h != self.h)):
@@ -172,15 +172,16 @@ class PACFEANet(nn.Module):
         self.neumann_node[:,:,-1] = t_conn[:,:,-1,1]
         # get the 1-D neumann boundary value
         bs,ks,hs,ws = t.shape
-        t_flat = t.view(bs,ks,hs*ws)
+        t_flat = torch.flip(t, dims=[2]).view(bs,ks,hs*ws)
+        self.t_neumann = t_flat.gather(2, self.neumann_node) # find element in t_flat for dim=2
         # perform 1-D convolution
-        t_conv = self.sac_tnet(t_flat[self.neumann_node], None, self.t_kernels)
+        t_conv = self.sac_tnet(self.t_neumann, None, self.t_kernels)
         # convert back to neumann boundary map
-        t_flat[self.neumann_node] = t_conv
-        return t_flat.view(bs,ks,hs,ws)
+        new_t_flat = t_flat.scatter_(-1, self.neumann_node, t_conv) # scatter is the inverse function of gather
+        return torch.flip(new_t_flat.view(bs,ks,hs,ws), dims=[2])
 
-    def calc_F(self, h, f, t, t_idx, t_conn, material_input):
-        return self.calc_bodyforce(h, f, material_input)+self.calc_neumannbc(h, t, t_idx, t_conn)
+    def calc_F(self, h, f, t, t_idx, t_conn, m):
+        return self.calc_bodyforce(h, f, m)+self.calc_neumannbc(h, t, t_idx, t_conn)
 
     def forward(self, term_KU=None, term_F=None, h=None, u=None, d_idx=None, f=None, t=None, t_idx=None, t_conn=None, m=None, msk=None):
         # for elasticity problems, m(material_input) has two channels, E and v
@@ -191,13 +192,13 @@ class PACFEANet(nn.Module):
         # t_idx is traction boundary index, 1 if boundary pixel, 0 else
         self.term_KU = term_KU
         if (term_KU == None):
-            self.term_KU = self.calc_KU(u, m)
+            self.term_KU = self.calc_KU(u, m, msk)
 
         self.term_F = term_F
         if (term_F == None):
             self.term_F = self.calc_F(h, f, t, t_idx, t_conn, m)
 
-        return (self.term_F-self.term_KU)*d_idx*msk
+        return (self.term_F-self.term_KU)*d_idx
 
         '''
         self.u_clone = self.input_clone(u, self.kf)

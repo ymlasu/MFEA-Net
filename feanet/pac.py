@@ -3,9 +3,13 @@ Copyright (C) 2019 NVIDIA Corporation.  All rights reserved.
 Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode).
 
 ====================
+27-Oct-2023 by Changyu Meng
+Added feanetkernel2d function
+Moved quadKernel2d for "quad" element to feanetkernel2d function
+
 22-Oct-2023 by Changyu Meng
 Created PacPool1d for 1D finite element analysis
-Created pacpool1d, packernel1d
+Created pacpool1d, feanetkernel1d
 Added linearKernel1d function for linear two-node element kernel calculation
 
 28-Sep-2023 by Changyu Meng
@@ -119,7 +123,7 @@ def nd2col(input_nd, kernel_size, stride=1, padding=0, output_padding=0, dilatio
 def linearKernel1d(input, stride, padding, dilation):
     '''
     Kernel function definition for linear two-node FEA element (no need to create a pytorch autograd function)
-    The input is a 1-dimensional element array
+    The input is a 1-dimensional element array, shape (bs,ks,nn_elem)
     Tensor index:  11, 12, 21, 22
     Channel number: 0,  1,  2,  3
     '''
@@ -139,15 +143,15 @@ def linearKernel1d(input, stride, padding, dilation):
     cols = cols.view(bs, ch, ks, out_l, window)
 
     # calculate kernel components
-    K11e2 = cols[:, 0, :, :, 1].view(bs, ks, 1, out_l).contiguous()
-    K12e2 = cols[:, 1, :, :, 1].view(bs, ks, 1, out_l).contiguous()
-    K21e1 = cols[:, 2, :, :, 0].view(bs, ks, 1, out_l).contiguous()
-    K22e1 = cols[:, 3, :, :, 0].view(bs, ks, 1, out_l).contiguous()
+    K11e2 = cols[:, 0, :, :, 1].view(bs, ks, out_l, 1).contiguous()
+    K12e2 = cols[:, 1, :, :, 1].view(bs, ks, out_l, 1).contiguous()
+    K21e1 = cols[:, 2, :, :, 0].view(bs, ks, out_l, 1).contiguous()
+    K22e1 = cols[:, 3, :, :, 0].view(bs, ks, out_l, 1).contiguous()
 
     # combine all kernel components together
-    output = torch.cat((K21e1, K11e2+K22e1, K12e2), dim=2)
+    output = torch.cat((K21e1, K11e2+K22e1, K12e2), dim=3)
 
-    return output # shape (bs, ks, 3, out_l)
+    return output # shape (bs, ks, out_l, 3)
 
 
 def twonodeKernel2d(input, stride, padding, dilation):
@@ -185,10 +189,9 @@ def twonodeKernel2d(input, stride, padding, dilation):
     row1 = torch.cat((K_zero, K21, K_zero), dim=3)
     row2 = torch.cat((K21, K11+K22, K12), dim=3)
     row3 = torch.cat((K_zero, K12, K_zero), dim=3)
-    # here the number of output channels is 1
     output = torch.cat((row1, row2, row3), dim=2)
 
-    return output # shape (bs, ks, 3, 3, in_h, in_w)
+    return output
 
 def quadKernel2d(input, stride, padding, dilation):
     '''
@@ -215,45 +218,28 @@ def quadKernel2d(input, stride, padding, dilation):
     cols = cols.view(bs, ch, ks, window[0], window[1], out_h, out_w)
 
     # calculate kernel components
-    K24e4 = cols[:, 7, :, 0, 0, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K23e4 = cols[:, 6, :, 0, 0, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K21e4 = cols[:, 4, :, 0, 0, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K22e4 = cols[:, 5, :, 0, 0, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K14e3 = cols[:, 3, :, 0, 1, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K13e3 = cols[:, 2, :, 0, 1, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K11e3 = cols[:, 0, :, 0, 1, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K12e3 = cols[:, 1, :, 0, 1, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K44e2 = cols[:, 15, :, 1, 1, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K43e2 = cols[:, 14, :, 1, 1, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K41e2 = cols[:, 12, :, 1, 1, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K42e2 = cols[:, 13, :, 1, 1, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K34e1 = cols[:, 11, :, 1, 0, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K33e1 = cols[:, 10, :, 1, 0, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K31e1 = cols[:, 8, :, 1, 0, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
-    K32e1 = cols[:, 9, :, 1, 0, :, :].view(
-        bs, ks, 1, 1, out_h, out_w).contiguous()
+    K24e4 = cols[:, 7, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K23e4 = cols[:, 6, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K21e4 = cols[:, 4, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K22e4 = cols[:, 5, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K14e3 = cols[:, 3, :, 0, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K13e3 = cols[:, 2, :, 0, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K11e3 = cols[:, 0, :, 0, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K12e3 = cols[:, 1, :, 0, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K44e2 = cols[:, 15, :, 1, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K43e2 = cols[:, 14, :, 1, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K41e2 = cols[:, 12, :, 1, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K42e2 = cols[:, 13, :, 1, 1, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K34e1 = cols[:, 11, :, 1, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K33e1 = cols[:, 10, :, 1, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K31e1 = cols[:, 8, :, 1, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
+    K32e1 = cols[:, 9, :, 1, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
 
     # combine all kernel components together
     row1 = torch.cat((K24e4, K23e4 + K14e3, K13e3), dim=3)
     row2 = torch.cat((K34e1 + K21e4, K11e3 + K22e4 +
                      K33e1 + K44e2, K43e2 + K12e3), dim=3)
     row3 = torch.cat((K31e1, K32e1 + K41e2, K42e2), dim=3)
-    # here the number of output channels is 1
     output = torch.cat((row1, row2, row3), dim=2)
 
     return output
@@ -489,7 +475,13 @@ class PacConvTranspose2dFn(Function):
 
 
 class PacPool1dFn(Function):
-    '''Note: didn't implement the backward computation yet'''
+    '''
+    Note: didn't implement the backward computation yet
+
+    input should be the 1-D element format, shape (bs, ks, nn_elem)
+    kernel shape is (bs, ks, nn_elem, kernel_size)
+        
+    '''
     @staticmethod
     def forward(ctx, input, kernel, kernel_size, stride=1, padding=0, dilation=1):
         (bs, ch), in_sz = input.shape[:2], input.shape[2:]
@@ -505,9 +497,9 @@ class PacPool1dFn(Function):
                               kernel if ctx.needs_input_grad[0] else None)
 
         input = F.pad(input, pad=ctx.padding)
-        cols = input.unfold(3, ctx.kernel_size[0], 1)
+        cols = input.unfold(2, ctx.kernel_size[0], 1) # output shape (bs, ks, nn_elem, kernel_size)
         output = cols.view(bs, ch, *kernel.shape[2:]) * kernel
-        output = torch.einsum('ijkm->ijm', (output,))
+        output = torch.einsum('ijmn->ijm', (output,))
 
         return output.clone() 
 
@@ -562,7 +554,7 @@ class PacPool2dFn(Function):
         return grad_input, grad_kernel, None, None, None, None
 
 
-def packernel1d(input, mask=None, kernel_size=0, stride=1, padding=0, output_padding=0, dilation=1,
+def feanetkernel1d(input, mask=None, kernel_size=0, stride=1, padding=0, output_padding=0, dilation=1,
                 kernel_type='linear', smooth_kernel_type='none', smooth_kernel=None, inv_alpha=None, inv_lambda=None,
                 channel_wise=False, normalize_kernel=False, transposed=False, native_impl=False):
     kernel_size = _pair(kernel_size)
@@ -599,6 +591,22 @@ def packernel1d(input, mask=None, kernel_size=0, stride=1, padding=0, output_pad
         output_mask = None
 
     return output, output_mask
+
+
+def feanetkernel2d(input, kernel_size=0, stride=1, padding=0, output_padding=0, dilation=1,
+                kernel_type='quad'):
+    kernel_size = _pair(kernel_size)
+    dilation = _pair(dilation)
+    padding = _pair(padding)
+    output_padding = _pair(output_padding)
+    stride = _pair(stride)
+
+    if (kernel_type == 'quad'):
+        output = quadKernel2d(input, stride, padding, dilation)
+    elif (kernel_type == 'two_node'):
+        output = twonodeKernel2d(input, stride, padding, dilation)
+
+    return output
 
 
 def packernel2d(input, mask=None, kernel_size=0, stride=1, padding=0, output_padding=0, dilation=1,
@@ -682,10 +690,6 @@ def packernel2d(input, mask=None, kernel_size=0, stride=1, padding=0, output_pad
         assert (smooth_kernel_type == 'none')
         output = GaussKernel2dFn.apply(
             input, kernel_size, stride, padding, dilation, channel_wise)
-    elif (kernel_type == 'quad'):
-        output = quadKernel2d(input, stride, padding, dilation)
-    elif (kernel_type == 'two_node'):
-        output = twonodeKernel2d(input, stride, padding, dilation)
 
     if mask is not None:
         output = output * mask  # avoid numerical issue on masked positions
@@ -1121,7 +1125,11 @@ class PacPool2d(_PacConvNd):
         self.native_impl = native_impl
 
     def compute_kernel(self, input_for_kernel, input_mask=None):
-        return packernel2d(input_for_kernel, input_mask,
+        if(self.kernel_type=="quad" or self.kernel_type=='two_node'):
+            return feanetkernel2d(input_for_kernel, kernel_size=self.kernel_size, stride=self.stride, 
+                                  padding=self.padding, dilation=self.dilation, kernel_type=self.kernel_type)
+        else:
+            return packernel2d(input_for_kernel, input_mask,
                            kernel_size=self.kernel_size, stride=self.stride, padding=self.padding,
                            dilation=self.dilation, kernel_type=self.kernel_type,
                            smooth_kernel_type=self.smooth_kernel_type,
@@ -1180,7 +1188,7 @@ class PacPool1d(_PacConvNd):
         self.native_impl = native_impl
 
     def compute_kernel(self, input_for_kernel, input_mask=None):
-        return packernel1d(input_for_kernel, input_mask,
+        return feanetkernel1d(input_for_kernel, input_mask,
                            kernel_size=self.kernel_size, stride=self.stride, padding=self.padding,
                            dilation=self.dilation, kernel_type=self.kernel_type,
                            smooth_kernel_type=self.smooth_kernel_type,
