@@ -33,7 +33,7 @@ class JacobiBlock():
             dyy = self.net.K_kernels[:, 3, 1, 1, :, :] 
             d_mat = torch.stack((dxx, dyy), dim=1)
         
-        d_mat[d_mat==0] = 1.0
+        d_mat[d_mat.abs()<1e-6] = 1.0
         return d_mat
 
     def jacobi_convolution(self, u, m, msk, d, d_idx, term_KU=None, term_F=None, h=None, f=None, t=None, t_idx=None, t_conn=None):
