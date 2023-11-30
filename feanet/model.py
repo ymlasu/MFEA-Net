@@ -17,8 +17,8 @@ class PACFEANet(nn.Module):
 
         self.K_kernels = None
         self.f_kernels = None
-        self.t_kernels = None
         self.materials = None
+        self.t_kernels = [] # t_kernel should be a list, since there may be multiple neumann connections
 
         self.sac_Knet = pac.PacPool2d(
             out_channels=self.ku*self.kf, kernel_size=kernel_size, padding=1, kernel_type='quad')
@@ -51,6 +51,7 @@ class PACFEANet(nn.Module):
         K12 = self.elastic_element12(m)
         K21 = self.elastic_element21(m)
         K22 = self.elastic_element22(m)
+
         # create a new dimension
         return torch.stack((K11, K12, K21, K22), dim=2).to(self.device)
 
@@ -125,9 +126,10 @@ class PACFEANet(nn.Module):
         return self.h*self.h/4.*el
 
     def traction_element(self, t_conn):
-        # create 1-D element
-        bs, _, n_elem, n_node = t_conn.shape
-        el = torch.zeros(size=(bs, 4, self.kf, n_elem)).to(self.device)
+        # create 1-D element (input t_conn is a 2D array with the shape (bs,h,w))
+        bs = t_conn.shape[0]
+        conn_len = torch.where(t_conn[0].reshape(-1) == -1)[0][0]
+        el = torch.zeros(size=(bs, 4, self.kf, conn_len-1)).to(self.device)
         el[:, 0, :, :], el[:, 1, :, :] = 2/3, 1/3
         el[:, 2, :, :], el[:, 3, :, :] = 1/3, 2/3
         return self.h/2.*el
@@ -145,7 +147,7 @@ class PACFEANet(nn.Module):
             if (self.mode == 'elastic'):
                 stiffness = self.elastic_elements(m)
             self.K_kernels = self.sac_Knet.compute_kernel(stiffness) # (bs, ks, 3, 3, h_node, w_node)
-            self.mask = msk.unsqueeze(2).unsqueeze(3).repeat(1, 1, 3, 3, 1, 1) # (bs, ks, 3, 3, h_node, w_node)
+            self.mask = msk.unsqueeze(2).unsqueeze(3).repeat(1, 1, 3, 3, 1, 1) # (bs, ku*kf, 3, 3, h_node, w_node)
             self.materials = m
 
         u_clone = self.input_clone(u, self.kf)
@@ -160,43 +162,49 @@ class PACFEANet(nn.Module):
             self.f_kernels = self.sac_fnet.compute_kernel(bodyforce_elements)
         return self.sac_fnet(f, None, self.f_kernels*self.mask)
         
-    def calc_neumannbc(self, h, t, t_idx, t_conn):
-        if ((self.t_kernels == None) or (h != self.h)):
+    def calc_neumannbc(self, h, t, t_conn):
+        # t_conn has shape of (bs, n_conn, h, w), n_conn is the number of connection lists
+        bs, n_conn, hs, ws = t_conn.shape
+        if ((self.t_kernels == []) or (h != self.h)):
             self.h = h
-            traction_elements = self.traction_element(t_conn)
-            self.t_kernels, _ = self.sac_tnet.compute_kernel(traction_elements) # output (bs, ks, 3, l)
-        # get the neumann boundary node list
-        bs,ks,nn_elem,_ = t_conn.shape
-        self.neumann_node = torch.zeros((bs,ks,nn_elem+1),dtype=torch.int64)
-        self.neumann_node[:,:,:-1] = t_conn[:,:,:,0]
-        self.neumann_node[:,:,-1] = t_conn[:,:,-1,1]
-        # get the 1-D neumann boundary value
-        bs,ks,hs,ws = t.shape
-        t_flat = torch.flip(t, dims=[2]).view(bs,ks,hs*ws)
-        self.t_neumann = t_flat.gather(2, self.neumann_node) # find element in t_flat for dim=2
-        # perform 1-D convolution
-        t_conv = self.sac_tnet(self.t_neumann, None, self.t_kernels)
-        # convert back to neumann boundary map
-        new_t_flat = t_flat.scatter_(-1, self.neumann_node, t_conv) # scatter is the inverse function of gather
-        return torch.flip(new_t_flat.view(bs,ks,hs,ws), dims=[2])
+            for i in range(n_conn):
+                traction_elements = self.traction_element(t_conn[:,i,:,:])
+                t_kernels, _ = self.sac_tnet.compute_kernel(traction_elements) # output (bs, ks, 3, l)
+                self.t_kernels.append(t_kernels)
 
-    def calc_F(self, h, f, t, t_idx, t_conn, m):
-        return self.calc_bodyforce(h, f, m)+self.calc_neumannbc(h, t, t_idx, t_conn)
+        # stack all the neumann bc together
+        t_baseline = torch.zeros(bs,self.kf,hs,ws)
+        for i in range(n_conn):
+            t_conn_flat = t_conn[0,i,:,:].reshape(-1)
+            conn = t_conn_flat[t_conn_flat != -1]
+            neumann_node = conn.unsqueeze(0).unsqueeze(0).expand(bs, self.kf, conn.shape[0])
+            # get the 1-D neumann boundary value
+            t_flat = torch.flip(t, dims=[2]).view(bs,self.kf,hs*ws)
+            t_neumann = t_flat.gather(2, neumann_node) # find element in t_flat for dim=2
+            # perform 1-D convolution
+            t_conv = self.sac_tnet(t_neumann, None, self.t_kernels[i])
+            # convert back to neumann boundary map, zero it first
+            t_flat.zero_()
+            t_flat.scatter_(-1, neumann_node, t_conv) # scatter is the inverse function of gather
+            t_baseline = t_baseline + torch.flip(t_flat.view(bs,self.kf,hs,ws), dims=[2])
+        return t_baseline
 
-    def forward(self, term_KU=None, term_F=None, h=None, u=None, d_idx=None, f=None, t=None, t_idx=None, t_conn=None, m=None, msk=None):
+    def calc_F(self, h, f, t, t_conn, m):
+        return self.calc_bodyforce(h, f, m)+self.calc_neumannbc(h, t, t_conn)
+
+    def forward(self, term_KU=None, term_F=None, h=None, u=None, d_idx=None, f=None, t=None, t_conn=None, m=None, msk=None):
         # for elasticity problems, m(material_input) has two channels, E and v
         # h is pixel size
         # u is initial solution
         # f is body force of unit volume, with kf channels
         # t is traction map, with kf channels
-        # t_idx is traction boundary index, 1 if boundary pixel, 0 else
         self.term_KU = term_KU
         if (term_KU == None):
             self.term_KU = self.calc_KU(u, m, msk)
 
         self.term_F = term_F
         if (term_F == None):
-            self.term_F = self.calc_F(h, f, t, t_idx, t_conn, m)
+            self.term_F = self.calc_F(h, f, t, t_conn, m)
 
         return (self.term_F-self.term_KU)*d_idx
 
