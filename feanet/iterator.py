@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from feanet.singlegrid import SingleGrid
 from torch.utils.data import DataLoader
 from functools import reduce
 
@@ -66,7 +67,11 @@ class PsiIterator(nn.Module):
         self.max_epochs = max_epochs
         self.iterator = iterator
         self.loss = nn.MSELoss()
-        self.grid = grid
+
+        if(grid is None):
+            self.grid = SingleGrid(h, n, mode=mode, dev=self.device)
+        else:
+            self.grid = grid
 
         if(iterator == 'jac'):
             self.psi_net = None # don't use neural network model to modify Jacobi iterator

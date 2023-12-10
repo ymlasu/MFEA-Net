@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from iterator import PsiIterator 
+from feanet.iterator import PsiIterator 
 
 class RestrictionNet(nn.Module):
     '''Given an initial kernel, inter-grid communication'''
