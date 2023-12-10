@@ -190,7 +190,10 @@ class PACFEANet(nn.Module):
         return t_baseline
 
     def calc_F(self, h, f, t, t_conn, m):
-        return self.calc_bodyforce(h, f, m)+self.calc_neumannbc(h, t, t_conn)
+        if (t_conn == None):
+            return self.calc_bodyforce(h, f, m)
+        else:
+            return self.calc_bodyforce(h, f, m)+self.calc_neumannbc(h, t, t_conn)
 
     def forward(self, term_KU=None, term_F=None, h=None, u=None, d_idx=None, f=None, t=None, t_conn=None, m=None, msk=None):
         # for elasticity problems, m(material_input) has two channels, E and v

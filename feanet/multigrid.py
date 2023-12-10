@@ -4,182 +4,170 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from FEANet.geo import Geometry
-from FEANet.mesh import MeshCenterInterface
-from FEANet.model import KNet, FNet
-from FEANet.jacobi import JacobiBlock
-
-class SingleGrid():
-    '''
-    Perform weighted Jacobi iteration relaxation for a single grid.
-    Note: the n should be the number of intervals, e.g., 
-          there are (n+1)*(n+1) grid points in total if the size is n
-          f has already been convoluted, i.e., f = fnet(ff) if ff is the sourcing term of PDE
-    '''
-    def __init__(self, size, n):
-        self.size = size # actual size of the plate
-        self.n = n 
-        self.omega = 2/3.
-        self.property = [1, 20] # homogeneous problem
-        self.plate = Geometry(nnode_edge = n+1)
-        self.grid = MeshCenterInterface(size, prop=self.property, nnode_edge=n+1)
-        self.v = torch.zeros((1, 1, n+1, n+1), requires_grad=False, dtype=torch.float32)
-        self.f = torch.zeros((1, 1, n+1, n+1), requires_grad=False, dtype=torch.float32)
-        self.InstantiateFEANet()
-        self.jac = JacobiBlock(self.Knet, self.grid, self.omega, self.plate.geometry_idx, self.plate.boundary_value)
-
-    def IsCoarsest(self):
-        return self.n == 2
-        
-    def InstantiateFEANet(self):
-        self.Knet = KNet(self.grid) # Initialize the stiffness network, given mesh
-        self.fnet = FNet(self.size/self.n) # Initialize the forcing term network, given mesh size
-        for param in self.Knet.parameters():
-            param.requires_grad = False
-        for param in self.fnet.parameters():
-            param.requires_grad = False
-
-    def Relax(self, v, f, num_sweeps_down):
-        '''
-        Perform a fixed number of weighted Jacobi iteration
-        '''
-        v = self.jac.jacobi_convolution(v, f, n_iter=num_sweeps_down)
-        return v
-
+from iterator import PsiIterator 
 
 class RestrictionNet(nn.Module):
-    '''Given an initial R kernel'''
-    def __init__(self, linear_tensor_R):
+    '''Given an initial kernel, inter-grid communication'''
+    def __init__(self, chs):
         super(RestrictionNet, self).__init__()
-        self.n_channel = 16
-        self.net = nn.Conv2d(in_channels=self.n_channel,out_channels=1, kernel_size=3, stride=2, bias=False) # restriction
-        for i in range(self.n_channel):
-            self.net.state_dict()['weight'][0][i] = linear_tensor_R
-    def forward(self, x_split):
-        '''The input should have already been splitted'''
-        return self.net(x_split)
+        self.chs = chs
+        self.net = nn.Conv2d(in_channels=chs, out_channels=chs, kernel_size=3, stride=2, padding=1, bias=False, groups=chs) # restriction
+        for i in range(self.chs):
+            self.net.state_dict()['weight'][i][0] = torch.asarray([[1., 2., 1.],
+                                                                   [2., 4., 2.],
+                                                                   [1., 2., 1.]]) / 4.0
+    
+    def forward(self, x):
+        return self.net(x)
+
 
 class ProlongationNet(nn.Module):
     '''Given an initial P kernel'''
-    def __init__(self, linear_tensor_P):
+    def __init__(self, chs):
         super(ProlongationNet, self).__init__()
-        self.n_channel = 16
-        self.net = nn.ConvTranspose2d(in_channels=self.n_channel,out_channels=1, kernel_size=3, stride=2, padding=1, bias=False) # interpolation
-        for i in range(self.n_channel):
-            self.net.state_dict()['weight'][i][0] = linear_tensor_P
+        self.chs = chs
+        self.net = nn.ConvTranspose2d(in_channels=chs,out_channels=chs, kernel_size=3, stride=2, padding=1, bias=False, groups=chs) # interpolation
+        for i in range(self.chs):
+            self.net.state_dict()['weight'][i][0] = torch.asarray([[1., 2., 1.],
+                                                                   [2., 4., 2.],
+                                                                   [1., 2., 1.]]) / 4.0
             
-    def forward(self, x_split): 
-        '''The input should have already been splitted'''
-        return self.net(x_split)
+    def forward(self, x): 
+        return self.net(x)
+    
 
 class MultiGrid(nn.Module):
     '''Define the multigrid problem for 2D, n is the finest grid size'''
-    def __init__(self, n, linear_tensor_R, linear_tensor_P, linear_ratio):
+    def __init__(self, h, n_elem, pacnet, device, nb_layers, mode='thermal', iterator = 'jac'):
         super(MultiGrid, self).__init__()
 
-        # Hyper parameters
-        self.m0 = 2
-        self.m = 6 # number of iterations to compute q
-
         # Problem parameters
-        self.size = 2
-        self.n = n # number of grid intervals for finest grid edges
-        self.L = int(np.log2(n)) # multigrid iteration
-        self.solution = []
+        self.device = device
+        self.h = h
+        self.n = n_elem # number of grid intervals for finest grid edges
+        self.nb_layers = nb_layers
+        self.L = int(np.log2(n_elem)) # number of multigrid levels
+        self.pacnet = pacnet
+        self.iterator = iterator
         
-        self.n_arr = self.SizeArray() # array to store grid size for each level
-        self.grids = self.GridDict() # dictionary of structure grids
-        
-        # Inter-grid communication network models
-        self.conv = RestrictionNet(linear_tensor_R)
-        self.deconv = ProlongationNet(linear_tensor_P)
-        self.w = nn.Parameter(linear_ratio)
-        
-        self.conv.requires_grad_(True)
-        self.deconv.requires_grad_(True)
-        self.w.requires_grad_(False)
-    
-    def GridDict(self):
-        grids = {}
-        for i in range(self.L):
-            grids[i] = SingleGrid(self.size, self.n_arr[i])
-        return grids
+        self.mode = mode
+        self.km, self.ku, self.kf = 1, 1, 1 # thermal problem
+        if(self.mode == 'elastic'):
+            self.km, self.ku, self.kf = 2, 2, 2
 
-    def SizeArray(self):
-        n_arr = []
+        self.iterators = self.IteratorDict() # dictionary of iterators
+
+        # Inter-grid communication network models
+        self.conv = RestrictionNet(self.kf).double().to(device)
+        self.deconv = ProlongationNet(self.ku).double().to(device)
+        
+        self.conv.requires_grad_(False)
+        self.deconv.requires_grad_(False)
+
+        self.mse_loss = nn.MSELoss()
+    
+    def IteratorDict(self):
+        iterators = {}
         for i in range(self.L):
-            n_arr.append(int(self.n/(2.**i)))
-        n_arr = np.array(n_arr)
-        return n_arr
+            prob_size = int(self.n/(2.**i))
+            iterators[i] = PsiIterator(self.device, h=self.h, psi_net=self.pacnet, n=prob_size, nb_layers=self.nb_layers, mode=self.mode, iterator=self.iterator)
+        return iterators
+            
+    def ProblemDictArray(self, f, t, t_conn, d, d_idx, m, msk):
+        '''
+        Array of dictionary that stores the problem hierarchy, given input of bottom layer
+
+        There are three approaches that can be used to create grid hierarchy:
+        1) mat = F.conv2d(mat.reshape((1,1,n,n)), torch.ones((1,1,1,1)), stride=2)
+        2) mat = F.max_pool2d(mat.reshape((1,1,n,n)), kernel_size=2, stride=2)
+        3) mat = F.avg_pool2d(mat.reshape((1,1,n,n)), kernel_size=2, stride=2)
+        '''
+        kernel_u = torch.ones((self.ku,1,1,1)).double().to(self.device)
+        kernel_f = torch.ones((self.kf,1,1,1)).double().to(self.device)
+        prob = {}
+        prob['h'] = self.h
+        prob['f'], prob['t'], prob['t_conn'] = f.clone(), t.clone(), t_conn.clone()
+        prob['d'], prob['d_idx'] = d.clone(), d_idx.clone()
+        prob['m'], prob['msk'] = m.clone(), msk.clone()
+        self.p_arr = [prob]
+        for i in range(self.L-1):
+            prob = {}
+            prob['h'] = self.h*(2.**(i+1))
+            prob['t'] = 0.*F.conv2d(self.p_arr[i]['t'], kernel_f, stride=2, groups=self.kf) # Neumann boundary is homogeneous at coarse grids
+            prob['t_conn'] = None
+            prob['d'] = 0.*F.conv2d(self.p_arr[i]['d'], kernel_u, stride=2, groups=self.ku) # Dirichlet boundary is homogeneous at coarse grids
+            prob['d_idx'] = F.conv2d(self.p_arr[i]['d_idx'], kernel_u, stride=2, groups=self.ku)
+            prob['m'] = F.avg_pool2d(self.p_arr[i]['m'], kernel_size=2, stride=2)
+            prob['msk'] = F.conv2d(self.p_arr[i]['msk'], kernel_u, stride=2, groups=self.ku)
+            self.p_arr.append(prob)
 
     def Restrict(self, rF):
         '''
         Perform restriction operation to down sample to next (coarser) level
-        Note: rF has already been splitted
         '''
-        rFC = self.conv(rF[:, :, 1:-1, 1:-1].clone())
-        rFC = F.pad(rFC,(1,1,1,1),"constant",0) # pad the coarse-level residual with zeros
+        rFC = self.conv(rF.clone())
         return rFC
 
     def Interpolate(self, eFC):
         '''
         Perform interpolation and upsample to previous (finer) level 
-        Note: eFC has already been splitted
         '''
         eF = self.deconv(eFC.clone())
         return eF 
 
-    def qm(self, x):
-        "Compute the convergence factor after m iterations"
-        res1 = self.f - self.grids[0].Knet(x)
-        res0 = self.f - self.grids[0].Knet(self.v_m0)
-        return torch.mean(torch.pow(torch.norm(res1[:, :, 1:-1, 1:-1].clone(), dim=(2,3))/torch.norm(res0[:, :, 1:-1, 1:-1].clone(), dim=(2,3)).detach(), 1.0/(self.m-self.m0+1)))
+    def forward(self, k):
+        U = self.p_arr[0]['u0'].clone()
+        for i in range(k-1):
+            U = self.Step(U).detach()
+        self.last_v = U.clone()
+        return self.Step(U)
 
-    def random_sampling(self, v):
-        d1, d2, d3, d4 = v.shape
-        for i in range(d1):
-            for j in range(d2):
-                coef = 10*np.random.rand(2) - 5
-                v[i, j, :, :] = torch.from_numpy(coef[0]*np.random.random((d3,d4)) + coef[1])
+    def Relax(self, iter, u, m, msk, d, d_idx, term_KU=None, term_F=None, h=None, f=None, t=None, t_conn=None, n_iter=1):
+        return iter.PsiRelax(u, m, msk, d, d_idx, term_KU, term_F, h, f, t, t_conn, n_iter)
 
-    def forward(self, F):
-        '''Input is RHS field F'''
-        self.f = self.grids[0].fnet(F) # assign the finest rhs 
-        self.v = torch.zeros_like(F, requires_grad=False, dtype=torch.float32) # initial solution
-        self.random_sampling(self.v)
-        U = torch.clone(self.v)
-    
-        for i in range(self.m-1):
-            U = self.iterate(U, self.f).detach()
-            if (i is self.m0-1):
-                self.v_m0 = U.detach().clone()
-                
-        return self.iterate(U, self.f)
-
-    def iterate(self, x, f):
-        '''Input x is the initial solution on the finest grid'''
-        n_batches = x.shape[0]
-        n_relax = 1 # number of relaxations
-        self.grids[0].v = x
-        self.grids[0].f = f
-        self.grids[0].v = self.grids[0].Relax(self.grids[0].v, self.grids[0].f, n_relax)
+    def Step(self, v):
+        '''Input v is the initial solution on the finest grid'''
+        n_relax = 1 # number of relaxations        
+        self.iterators[0].grid.v = self.Relax(self.iterators[0], v, 
+                                              self.p_arr[0]['m'], self.p_arr[0]['msk'], 
+                                              self.p_arr[0]['d'], self.p_arr[0]['d_idx'],
+                                              None, None,
+                                              self.p_arr[0]['h'], self.p_arr[0]['f'], 
+                                              self.p_arr[0]['t'], self.p_arr[0]['t_conn'], 
+                                              n_relax)
+        self.iterators[0].grid.f = self.iterators[0].grid.net.term_F
 
         for j in range(0, self.L-1):
-            rF = self.grids[j].f-self.grids[j].Knet(self.grids[j].v)
-            rF = self.grids[j].Knet.split_x(rF)
-            self.grids[j+1].f = self.w[0]*self.Restrict(rF)
-            self.grids[j+1].v = torch.zeros((n_batches,1,self.n_arr[j+1]+1,self.n_arr[j+1]+1), dtype=torch.float32, requires_grad=False)
-            self.grids[j+1].v = self.grids[j+1].Relax(self.grids[j+1].v, self.grids[j+1].f, n_relax)
+            # calculate fine grid residual
+            rF = self.iterators[j].grid.net(u=self.iterators[j].grid.v, 
+                                            d_idx=self.p_arr[j]['d_idx'],
+                                            m=self.p_arr[j]['m'], msk=self.p_arr[j]['msk'],
+                                            term_F=self.iterators[j].grid.f)
+            self.iterators[j+1].grid.f = self.Restrict(rF)
+            self.iterators[j+1].grid.v = torch.zeros_like(self.iterators[j+1].grid.f) 
+            # calculate coarse grid error
+            self.iterators[j+1].grid.v = self.Relax(self.iterators[j+1], self.iterators[j+1].grid.v, 
+                                              self.p_arr[j+1]['m'], self.p_arr[j+1]['msk'], 
+                                              self.p_arr[j+1]['d'], self.p_arr[j+1]['d_idx'],
+                                              term_F=self.iterators[j+1].grid.f, 
+                                              n_iter=n_relax)
 
-        self.grids[self.L-1].v = self.grids[self.L-1].Relax(self.grids[self.L-1].v, self.grids[self.L-1].f, n_relax)
+        self.iterators[self.L-1].grid.v = self.Relax(self.iterators[self.L-1], self.iterators[self.L-1].grid.v, 
+                                              self.p_arr[self.L-1]['m'], self.p_arr[self.L-1]['msk'], 
+                                              self.p_arr[self.L-1]['d'], self.p_arr[self.L-1]['d_idx'],
+                                              term_F=self.iterators[self.L-1].grid.f, 
+                                              n_iter=n_relax)
 
         for j in range(self.L-2,-1,-1):
-            eFC = self.grids[j+1].Knet.split_x(self.grids[j+1].v)
-            eF_delta = self.w[1]*self.Interpolate(eFC)
-            self.grids[j].v = self.grids[j].v + eF_delta
-            self.grids[j].v = self.grids[j].Relax(self.grids[j].v, self.grids[j].f, n_relax)
+            eF_delta = self.Interpolate(self.iterators[j+1].grid.v)
+            self.iterators[j].grid.v = self.iterators[j].grid.v + eF_delta
+            self.iterators[j].grid.v = self.Relax(self.iterators[j], self.iterators[j].grid.v, 
+                                              self.p_arr[j]['m'], self.p_arr[j]['msk'], 
+                                              self.p_arr[j]['d'], self.p_arr[j]['d_idx'],
+                                              term_F=self.iterators[j].grid.f, 
+                                              n_iter=n_relax)
 
             # zero out the previous level solution
-            self.grids[j+1].v = torch.zeros((n_batches,1,self.n_arr[j+1]+1,self.n_arr[j+1]+1), dtype=torch.float32, requires_grad=False) 
+            self.iterators[j+1].grid.v *= 0. 
 
-        return self.grids[0].v 
+        return self.iterators[0].grid.v 

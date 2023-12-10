@@ -48,3 +48,13 @@ def plot_thermalfield(field, ftitle='Title'):
     plt.axis('off')
     plt.colorbar(im)
     plt.show()
+
+
+def heatmap2d(arr, fname, cbar = True):
+    plt.imshow(arr,cmap='viridis',vmin=-1,vmax=1)
+    if(cbar is True):
+        plt.colorbar()
+    plt.gcf()
+    plt.axis('off')
+    plt.savefig(fname, dpi=500, bbox_inches='tight')
+    plt.show()

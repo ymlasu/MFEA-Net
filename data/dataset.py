@@ -9,8 +9,8 @@ class MechanicalDataSet(Dataset):
     def __init__(self, h5file, device, transform=None, target_transform=None):
         h5 = h5py.File(h5file, 'r')
         self.device = device
-        self.mask = np.array(h5['mask'], dtype=np.int64)
-        self.dirich_idx = np.array(h5['dirich_idx'], dtype=np.int64)
+        self.mask = np.array(h5['mask'], dtype=np.double)
+        self.dirich_idx = np.array(h5['dirich_idx'], dtype=np.double)
         self.dirich_value = np.array(h5['dirich_value'], dtype=np.double)
         self.traction_value = np.array(h5['neumann_value'], dtype=np.double)
         self.traction_conn = np.array(h5['neumann_conn'], dtype=np.int64) 
