@@ -82,6 +82,7 @@ class MultiGrid(nn.Module):
         2) mat = F.max_pool2d(mat.reshape((1,1,n,n)), kernel_size=2, stride=2)
         3) mat = F.avg_pool2d(mat.reshape((1,1,n,n)), kernel_size=2, stride=2)
         '''
+        kernel = torch.ones((1,1,1,1)).double().to(self.device)
         kernel_u = torch.ones((self.ku,1,1,1)).double().to(self.device)
         kernel_f = torch.ones((self.kf,1,1,1)).double().to(self.device)
         prob = {}
@@ -98,7 +99,7 @@ class MultiGrid(nn.Module):
             prob['d'] = 0.*F.conv2d(self.p_arr[i]['d'], kernel_u, stride=2, groups=self.ku) # Dirichlet boundary is homogeneous at coarse grids
             prob['d_idx'] = F.conv2d(self.p_arr[i]['d_idx'], kernel_u, stride=2, groups=self.ku)
             prob['m'] = F.avg_pool2d(self.p_arr[i]['m'], kernel_size=2, stride=2)
-            prob['msk'] = F.conv2d(self.p_arr[i]['msk'], kernel_u, stride=2, groups=self.ku)
+            prob['msk'] = F.conv2d(self.p_arr[i]['msk'], kernel, stride=2)
             self.p_arr.append(prob)
 
     def Restrict(self, rF):
