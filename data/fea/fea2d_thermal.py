@@ -14,6 +14,8 @@ class ThermalFEM():
         self.n_nodes = grid.points.shape[0]
         self.d = np.zeros(self.n_nodes, dtype=np.float32)
         self.f = np.zeros_like(f_val, dtype=np.float32)
+        self.flux = np.zeros((self.n_nodes,2), dtype=np.float32)
+        self.flux_avg = np.zeros((self.n_nodes,2), dtype=np.float32)
         self.residual = np.zeros_like(self.d)
         self.ku = np.zeros_like(self.d)
 
@@ -26,7 +28,6 @@ class ThermalFEM():
         self.NeumannBC(neumann_val)
         self.A, self.A_F, self.A_EF = self.CreateA()
 
-        
     def CreateA(self):
         '''
         Stiffness matrix, return A_F and A_EF
@@ -50,6 +51,56 @@ class ThermalFEM():
             
         return A, A[np.ix_(self.grid.ndirich_valid_node,self.grid.ndirich_valid_node)], A[np.ix_(self.grid.dirich_plus_nonvalid_node,self.grid.ndirich_valid_node)]
 
+    def ComputeAverageHeatFlux(self):
+        # Initialize arrays to store total heat flux contributions and count of elements contributing
+        total_flux = np.zeros((self.n_nodes, 2))
+        count_contributions = np.zeros(self.n_nodes)
+
+        qpts_flux = np.array([[-1, 1, 1, -1], [-1, -1, 1, 1]])
+        for i, c in enumerate(self.grid.cells):
+            xe = self.grid.points[c, :].T[:2]  # [2, 4]
+            alpha = self.grid.mesh.cell_data['alpha'][i]
+            de = self.d[c].reshape(1, -1)  # [1, 4]
+            for i, q in enumerate(qpts_flux.T):
+                [N, dNdp] = self.grid.shapefunc(q)
+                J = np.dot(xe, dNdp)  # [2, 2]
+                dNdx = np.dot(dNdp, np.linalg.inv(J))  # [4, 2]
+                qh = -alpha * np.dot(de, dNdx)  # [1, 2]
+
+                # Calculate contribution at each node
+                total_flux[c[i], :] += qh.squeeze()
+                count_contributions[c[i]] += 1
+
+        # Compute the average heat flux
+        for node_idx in range(self.n_nodes):
+            if count_contributions[node_idx] > 0:
+                self.flux_avg[node_idx, :] = total_flux[node_idx, :] / count_contributions[node_idx]
+
+        return self.flux_avg
+
+    def ComputeHeatFlux(self):
+        H = np.zeros((self.n_nodes,self.n_nodes))
+        y = np.zeros((self.n_nodes,2))
+        for i, c in enumerate(self.grid.cells):
+            xe = self.grid.points[c,:].T[:2,:] #[2,4]
+            alpha = self.grid.mesh.cell_data['alpha'][i]
+            de = self.d[c].reshape(1,-1) #[1,4]
+            He = np.zeros((4,4))
+            for q in self.qpts.T:
+                [N,dNdp] = self.grid.shapefunc(q)
+                J = np.dot(xe, dNdp) #[2,2]
+                dNdx = np.dot(dNdp, np.linalg.inv(J)) #[4,2]
+                qh = -alpha*np.dot(de, dNdx)*np.linalg.det(J) #[1,2]
+                He += np.linalg.det(J)*np.dot(N,N.T) #[4,4]
+                y[c,:] += np.dot(N,qh) 
+            H[np.ix_(c,c)] += He
+        # set diagonal values of non-valid nodes to be 1.0  
+        H[self.grid.nonvalid_node,self.grid.nonvalid_node] = 1.0
+        # compute the heat flux
+        self.flux[:,0] = np.linalg.solve(H, y[:,0])
+        self.flux[:,1] = np.linalg.solve(H, y[:,1])
+        return H
+
     def UpdateSource(self, f_val = None):
         '''
         Return the rhs internal sourcing term with modification from finite element term
@@ -60,17 +111,20 @@ class ThermalFEM():
             for q in self.qpts.T:
                 [N,dNdp] = self.grid.shapefunc(q)
                 J = np.dot(xe, dNdp) #[2x2]
-                fe += np.linalg.det(J)*np.dot(N,np.dot(N.T,f_val[c]))
+                fe += np.linalg.det(J) * N.squeeze() * f_val[c]
             self.f[c] += fe
     
     def NeumannBC(self, bc_val):
+        '''
+        In Neumann bc, the heat flux is assumed to flow out of the domain
+        '''
         for neumann_conn in self.grid.neumann_conn_list:
             for c in neumann_conn:
                 xe = self.grid.points[c,:][:,:2] #[2x2]
                 le = np.linalg.norm(xe[1,:]-xe[0,:])
                 for q in [1./np.sqrt(3), -1./np.sqrt(3)]:
                     N = 0.5*np.array([1-q, 1+q])
-                    self.f[c] += np.dot(N,np.dot(N.T,bc_val[c]))*le/2 #[2x1]
+                    self.f[c] += N.squeeze() * bc_val[c] * le/2 #[2x1]
 
     def DirichBC(self, bc_val):
         self.d[self.grid.nonvalid_node] = 0.0 # response should be zero at nonvalid nodes
