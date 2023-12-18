@@ -3,17 +3,21 @@ import random
 import matplotlib.pyplot as plt
 import fea.gaussian_random_fields as gr
 
-class ElasticFEM():
+class ElasticFEM2D():
     '''
     Note: input the mesh grid, material, bc and f values, generate a finite element problem
     '''
-    def __init__(self, grid, material, dirich_val, neumann_val, f_val):
+    def __init__(self, grid, mode, material, dirich_val, neumann_val, f_val):
         self.grid = grid
+        self.mode = mode # plane stress or plane strain
         self.res_arr = []
         self.qpts = np.array([[-1, 1, 1, -1], [-1, -1, 1, 1]])/np.sqrt(3) #[2x4], integration points
         self.n_nodes = grid.points.shape[0]
-        self.d = np.zeros(2*self.n_nodes, dtype=np.float64) # x,y components
-        self.f = np.zeros_like(f_val, dtype=np.float64)
+        self.d = np.zeros(2*self.n_nodes, dtype=np.float32) # x,y components
+        self.f = np.zeros_like(f_val, dtype=np.float32)
+        self.strain = np.zeros((self.n_nodes,3), dtype=np.float32)
+        self.stress = np.zeros((self.n_nodes,3), dtype=np.float32)
+        self.strain_energy_density = np.zeros((self.n_nodes,), dtype=np.float32)
         self.residual = np.zeros_like(self.d)
         self.ku = np.zeros_like(self.d)
 
@@ -27,6 +31,17 @@ class ElasticFEM():
         self.NeumannBC(neumann_val)
         self.A, self.A_F, self.A_EF = self.CreateA()
 
+    def StiffnessMatrix(self, E, v):
+        if(self.mode == 'plane_strain'):
+            D = E/(1.+v)/(1-2*v)*np.array([[1.-v, v, 0.],
+                                           [v, 1.-v, 0.],
+                                           [0., 0., (1-2*v)/2]])
+        elif(self.mode == 'plane_stress'):
+            D = E/(1.-v*v)*np.array([[1., v, 0.], 
+                                     [v, 1., 0.], 
+                                     [0., 0., (1.-v)/2.]]) 
+        return D
+    
     def CreateA(self):
         '''
         Stiffness matrix, return A_F and A_EF
@@ -37,8 +52,7 @@ class ElasticFEM():
             xe = self.grid.points[c,:].T[:2,:] #[2x4]
             E = self.grid.mesh.cell_data['E'][i]
             v = self.grid.mesh.cell_data['v'][i]
-            D = E/(1.-v*v)*np.array([[1., v, 0.], [v, 1., 0.], [0., 0., (1.-v)/2.]]) # plane stress
-
+            D = self.StiffnessMatrix(E, v)
             Ke = np.zeros((8,8))
             for q in self.qpts.T:
                 [_,dNdp] = self.grid.shapefunc(q)
@@ -69,6 +83,45 @@ class ElasticFEM():
                 J = np.dot(xe, dNdp) #[2x2]
                 self.f[2*c] += np.linalg.det(J)*np.dot(N,np.dot(N.T,f_val[2*c]))
                 self.f[2*c+1] += np.linalg.det(J)*np.dot(N,np.dot(N.T,f_val[2*c+1]))
+
+    def ComputeStrainStress(self):
+        total_strain = np.zeros((self.n_nodes, 3))
+        total_stress = np.zeros((self.n_nodes, 3))
+        count_contributions = np.zeros(self.n_nodes)
+        qpts_strain = np.array([[-1, 1, 1, -1], [-1, -1, 1, 1]])
+        for i, c in enumerate(self.grid.cells):
+            xe = self.grid.points[c, :].T[:2]  # [2, 4]
+            E = self.grid.mesh.cell_data['E'][i]
+            v = self.grid.mesh.cell_data['v'][i]
+            D = self.StiffnessMatrix(E, v)
+            de = np.zeros((8, 1))
+            de[0::2] = self.d[2*c].reshape(-1, 1) # x
+            de[1::2] = self.d[2*c+1].reshape(-1, 1) # y
+            for i, q in enumerate(qpts_strain.T):
+                [N, dNdp] = self.grid.shapefunc(q)
+                J = np.dot(xe, dNdp)  # [2, 2]
+                dNdx = np.dot(dNdp, np.linalg.inv(J))  # [4, 2]
+                B = np.zeros((3,8))
+                B[0, 0::2] = dNdx[:,0]
+                B[1, 1::2] = dNdx[:,1]
+                B[2, 0::2] = dNdx[:,1]
+                B[2, 1::2] = dNdx[:,0]
+                strain_h = np.dot(B, de)  # [3, 1]
+                stress_h = np.dot(D, strain_h) # [3, 1]
+
+                # Calculate contribution at each node
+                total_strain[c[i], :] += strain_h.squeeze()
+                total_stress[c[i], :] += stress_h.squeeze()
+                count_contributions[c[i]] += 1
+
+        # Compute the average strain, and stress
+        for node_idx in range(self.n_nodes):
+            if count_contributions[node_idx] > 0:
+                self.strain[node_idx, :] = total_strain[node_idx, :] / count_contributions[node_idx]
+                self.stress[node_idx, :] = total_stress[node_idx, :] / count_contributions[node_idx]
+    
+    def ComputeStrainEnergyDensity(self):
+        self.strain_energy_density = 0.5*np.sum(self.strain * self.stress, axis=1)
 
     def NeumannBC(self, bc_val):
         '''
@@ -134,28 +187,53 @@ class ElasticFEM():
 
         return u, residual, ku
     
-    def PlotField(self, field = None):
+    def PlotField(self, num = 1, field = None):
         '''Default is to plot the solution field'''
         if(field is None):
             field = self.d
         
         h, w = self.grid.img_h+1, self.grid.img_w+1
-        self.x_disp = field[0::2].reshape((h, w))
-        self.y_disp = field[1::2].reshape((h, w))
-
         fig = plt.figure()
 
-        fig.add_subplot(1,2,1)
-        im1 = plt.imshow(self.x_disp, origin='lower')
-        plt.axis('off')
-        plt.title('X')
-        plt.colorbar(im1)
+        if(num == 1):
+            field2d = field.reshape((h, w))
+            im = plt.imshow(field2d, origin='lower')
+            plt.colorbar(im)
 
-        fig.add_subplot(1,2,2)
-        im2 = plt.imshow(self.y_disp, origin='lower')
-        plt.axis('off')
-        plt.title('Y')
-        plt.colorbar(im2)
+        if(num == 2):
+            field1 = field[0::2].reshape((h, w))
+            field2 = field[1::2].reshape((h, w))
 
+            fig.add_subplot(1,2,1)
+            im1 = plt.imshow(field1, origin='lower')
+            plt.title('X')
+            plt.colorbar(im1)
+
+            fig.add_subplot(1,2,2)
+            im2 = plt.imshow(field2, origin='lower')
+            plt.title('Y')
+            plt.colorbar(im2)
+
+        if(num == 3):
+            field1 = field[:,0].reshape((h, w))
+            field2 = field[:,1].reshape((h, w))
+            field3 = field[:,2].reshape((h, w))
+
+            fig.add_subplot(1,3,1)
+            im1 = plt.imshow(field1, origin='lower')
+            plt.title('X')
+            plt.colorbar(im1)
+
+            fig.add_subplot(1,3,2)
+            im2 = plt.imshow(field2, origin='lower')
+            plt.title('Y')
+            plt.colorbar(im2)
+
+            fig.add_subplot(1,3,3)
+            im3 = plt.imshow(field3, origin='lower')
+            plt.title('XY')
+            plt.colorbar(im3)
+
+        plt.axis('off')
         plt.tight_layout()
         plt.show()
