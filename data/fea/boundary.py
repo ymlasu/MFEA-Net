@@ -121,7 +121,7 @@ def define_curved_nodes(img):
                         if(key == 7):
                             curved[i+1,j+1] = 1
 
-    if(curved_conn is not []):
+    if(curved_conn != []):
         curved_conn = reorder_connection(curved_conn)
     return [curved, curved_conn]
 
@@ -171,7 +171,10 @@ def define_edge_nodes(img):
     left_idx = np.zeros((h_img+1, w_img+1))
     right_idx = np.zeros((h_img+1, w_img+1))
 
-    conns = 4*[[]] # top, bottom, left, right
+    conn_top = []
+    conn_bottom = []
+    conn_left = []
+    conn_right = []
 
     for i in range(h_img):
         for j in range(w_img):
@@ -183,22 +186,32 @@ def define_edge_nodes(img):
                         surr2 = find_surrounding(img, [pt[0],pt[1]])
                         if((6 not in surr1) and (6 not in surr2)):
                             # if surrounding doesn't contain 6, it is top edge
-                            add_edge_connection(img, key, top_idx, conns[0], i, j)
+                            add_edge_connection(img, key, top_idx, conn_top, i, j)
+                            #print("top: ", conn_top)
                         if((1 not in surr1) and (1 not in surr2)):
                             # if surrounding doesn't contain 1, it is bottom edge
-                            add_edge_connection(img, key, bottom_idx, conns[1], i, j)
+                            add_edge_connection(img, key, bottom_idx, conn_bottom, i, j)
+                            #print("bottom: ", conn_bottom)
                         if((3 not in surr1) and (3 not in surr2)):
                             # if surrounding doesn't contain 3, it is left edge
-                            add_edge_connection(img, key, left_idx, conns[2], i, j)
+                            add_edge_connection(img, key, left_idx, conn_left, i, j)
+                            #print("left: ", conn_left)
                         if((4 not in surr1) and (4 not in surr2)):
                             # if surrounding doesn't contain 4, it is right edge
-                            add_edge_connection(img, key, right_idx, conns[3], i, j)
-    for i in range(len(conns)):
-        if(conns[i] is not []):
-            conns[i] = reorder_connection(conns[i])
+                            add_edge_connection(img, key, right_idx, conn_right, i, j)
+                            #print("right: ", conn_right)
+    
+    if(conn_top != []):
+        conn_top = reorder_connection(conn_top)
+    if(conn_bottom != []):
+        conn_bottom = reorder_connection(conn_bottom)
+    if(conn_left != []):
+        conn_left = reorder_connection(conn_left)
+    if(conn_right != []):
+        conn_right = reorder_connection(conn_right)
             
-    return [[top_idx, conns[0]], [bottom_idx, conns[1]], 
-            [left_idx, conns[2]], [right_idx, conns[3]]]
+    return [[top_idx, conn_top], [bottom_idx, conn_bottom], 
+            [left_idx, conn_left], [right_idx, conn_right]]
 
 
 def define_boundary_nodes(img):

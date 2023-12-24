@@ -165,7 +165,7 @@ class ThermalFEM():
         ku = np.dot(A, uprev)
         residual = b - np.dot(A, uprev)
         res = np.linalg.norm(residual)
-        while(res > 1e-6 and N < 1 ):
+        while(res > 1e-6):
             u = omega*np.dot(Dinv, residual) + uprev
             ku = np.dot(A, u)
             residual = b - np.dot(A, u)
