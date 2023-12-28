@@ -19,7 +19,7 @@ class PsiNet(nn.Module):
 
         self.mode = mode
         self.km, self.ku, self.kf = 1, 1, 1 # thermal problem
-        if(self.mode == 'elastic'):
+        if(self.mode != 'thermal'):
             self.km, self.ku, self.kf = 2, 2, 2
             
         # self.attention_map = nn.Sequential(

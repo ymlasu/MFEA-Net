@@ -13,7 +13,7 @@ class JacobiBlock():
         self.net = net # initialize the nn network
         self.mode = mode
         self.kf = 1 # thermal problem
-        if(self.mode == 'elastic'):
+        if(self.mode != 'thermal'):
             self.kf = 2
 
         self.omega = 2/3.
@@ -28,7 +28,7 @@ class JacobiBlock():
         """ Comopute diagonal matrix for Jacobi iteration """
         if(self.mode == 'thermal'):
             d_mat = torch.unsqueeze(self.net.K_kernels[:, 0, 1, 1, :, :], dim=1) # pac K_kernels
-        elif(self.mode == 'elastic'):
+        elif(self.mode == 'elastic_pstress' or self.mode == 'elastic_pstrain'):
             dxx = self.net.K_kernels[:, 0, 1, 1, :, :] 
             dyy = self.net.K_kernels[:, 3, 1, 1, :, :] 
             d_mat = torch.stack((dxx, dyy), dim=1)
