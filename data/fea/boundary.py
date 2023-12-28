@@ -2,6 +2,7 @@
 define_boundary_nodes(mask)
 
 Given a binary mask image, output the boundary nodes and connections.
+Assume only one curved boundary, no holes. 
 Output: [[top_idx, top_conn], 
          [bottom_idx, bottom_conns], 
          [left_idx, left_conn], 

@@ -65,7 +65,8 @@ class ThermalFEM():
                 [N, dNdp] = self.grid.shapefunc(q)
                 J = np.dot(xe, dNdp)  # [2, 2]
                 dNdx = np.dot(dNdp, np.linalg.inv(J))  # [4, 2]
-                qh = -alpha * np.dot(de, dNdx)  # [1, 2]
+                qh = np.dot(de, dNdx)  # [1, 2], test purpose
+                #qh = -alpha * np.dot(de, dNdx)  # [1, 2]
 
                 # Calculate contribution at each node
                 total_flux[c[i], :] += qh.squeeze()
