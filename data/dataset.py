@@ -9,7 +9,8 @@ class MechanicalDataSet(Dataset):
     def __init__(self, h5file, device, transform=None, target_transform=None):
         h5 = h5py.File(h5file, 'r')
         self.device = device
-        self.mask = np.array(h5['mask'], dtype=np.double)
+        self.elem_mask = np.array(h5['elem_mask'], dtype=np.double)
+        self.node_mask = np.array(h5['node_mask'], dtype=np.double)
         self.dirich_idx = np.array(h5['dirich_idx'], dtype=np.double)
         self.dirich_value = np.array(h5['dirich_value'], dtype=np.double)
         self.neumann_idx = np.array(h5['neumann_idx'], dtype=np.double)
@@ -34,9 +35,11 @@ class MechanicalDataSet(Dataset):
         neumann_idx_tensor = torch.flip(self.totensor(self.neumann_idx[idx]), dims=[1]).to(self.device)
         neumann_value_tensor = torch.flip(self.totensor(self.neumann_value[idx]), dims=[1]).to(self.device)
         neumann_conn_tensor = self.totensor(self.neumann_conn[idx]).to(self.device)
-        mask_tensor = torch.flip(self.totensor(self.mask[idx]), dims=[1]).to(self.device)
+        node_mask_tensor = torch.flip(self.totensor(self.node_mask[idx]), dims=[1]).to(self.device)
+        elem_mask_tensor = torch.flip(self.totensor(self.elem_mask[idx]), dims=[1]).to(self.device)
         if self.transform:
-            mask_tensor = self.transform(mask_tensor)
+            node_mask_tensor = self.transform(node_mask_tensor)
+            elem_mask_tensor = self.transform(elem_mask_tensor)
             source_tensor = self.transform(source_tensor)
             solution_tensor = self.transform(solution_tensor)
             material_tensor = self.transform(material_tensor)
@@ -44,5 +47,5 @@ class MechanicalDataSet(Dataset):
             dirich_value_tensor = self.transform(dirich_value_tensor)
             neumann_idx_tensor = self.transform(neumann_idx_tensor)
             neumann_value_tensor = self.transform(neumann_value_tensor)
-        return mask_tensor, dirich_idx_tensor, dirich_value_tensor, neumann_idx_tensor, neumann_value_tensor, neumann_conn_tensor, material_tensor, source_tensor, solution_tensor
+        return elem_mask_tensor, node_mask_tensor, dirich_idx_tensor, dirich_value_tensor, neumann_idx_tensor, neumann_value_tensor, neumann_conn_tensor, material_tensor, source_tensor, solution_tensor
     

@@ -63,7 +63,7 @@ class DerivativeNet(nn.Module):
         5- add the internal and edge derivative together
         '''
         eroded_mask = self.shrink_mask(mask, direction)
-        edge1_mask, edge2_mask = self.eroded_pixels(mask, direction)
+        edge1_mask, edge2_mask = self.eroded_pixels(mask.bool(), direction)
 
         if(direction == 'x'):
             internal_d = eroded_mask * self.xNet_internal(u)
