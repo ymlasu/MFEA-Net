@@ -11,6 +11,7 @@ Output: [[top_idx, top_conn],
 '''
 
 import numpy as np
+from collections import Counter
 
 def find_surrounding(img, pt):
     '''
@@ -33,6 +34,35 @@ def find_surrounding(img, pt):
             del dict_surrounding[i]
     return dict_surrounding
 
+def find_single_element(arr):
+    # Flatten the array and count the occurrences
+    flattened_arr = np.array(arr).flatten()
+    element_counts = Counter(flattened_arr)
+
+    # Find elements that occur only once
+    single_occurrences = {element for element, count in element_counts.items() if count == 1}
+
+    # Function to check if a pair contains a single-occurrence element
+    def contains_single_occurrence(pair):
+        return pair[0] in single_occurrences or pair[1] in single_occurrences
+
+    # Separate pairs that contain single-occurrence elements
+    single_occurrence_pairs = [pair for pair in arr if contains_single_occurrence(pair)]
+
+    # Ensure the single-occurrence element is the first item in the pair
+    for i, pair in enumerate(single_occurrence_pairs):
+        if pair[1] in single_occurrences:
+            single_occurrence_pairs[i] = pair[::-1]  # Swap the elements
+
+    # Pairs that do not contain single-occurrence elements
+    other_pairs = [pair for pair in arr if not contains_single_occurrence(pair)]
+
+    # Combine the pairs, putting single-occurrence pairs at the beginning
+    rearranged_arr = np.array(single_occurrence_pairs + other_pairs)
+
+    return rearranged_arr
+
+
 def reorder_connection(neumann_conn):
     '''
     Given a list of connected nodes, write a function to let it to be head-tail connected. 
@@ -43,6 +73,9 @@ def reorder_connection(neumann_conn):
     Input: neumann_conn, a list with each element is a two-element sublist
     Output: corrected order neumann_conn 
     '''
+
+    # find the single occurance elements
+    neumann_conn = find_single_element(neumann_conn)
 
     graph = {}
     for a, b in neumann_conn:
