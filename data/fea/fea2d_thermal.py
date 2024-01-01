@@ -61,16 +61,16 @@ class ThermalFEM():
             xe = self.grid.points[c, :].T[:2]  # [2, 4]
             alpha = self.grid.mesh.cell_data['alpha'][i]
             de = self.d[c].reshape(1, -1)  # [1, 4]
-            for i, q in enumerate(qpts_flux.T):
+            for j, q in enumerate(qpts_flux.T):
                 [N, dNdp] = self.grid.shapefunc(q)
                 J = np.dot(xe, dNdp)  # [2, 2]
                 dNdx = np.dot(dNdp, np.linalg.inv(J))  # [4, 2]
-                qh = np.dot(de, dNdx)  # [1, 2], test purpose
-                #qh = -alpha * np.dot(de, dNdx)  # [1, 2]
+                # qh = np.dot(de, dNdx)  # [1, 2], test purpose
+                qh = -alpha * np.dot(de, dNdx)  # [1, 2]
 
                 # Calculate contribution at each node
-                total_flux[c[i], :] += qh.squeeze()
-                count_contributions[c[i]] += 1
+                total_flux[c[j], :] += qh.squeeze()
+                count_contributions[c[j]] += 1
 
         # Compute the average heat flux
         for node_idx in range(self.n_nodes):

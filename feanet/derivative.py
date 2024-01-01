@@ -4,8 +4,9 @@ import numpy as np
 import torch.nn.functional as F
 
 class DerivativeNet(nn.Module):
-    def __init__(self, chs, h):
+    def __init__(self, h, chs, nmask):
         super(DerivativeNet, self).__init__()
+        self.nmask = nmask
         self.xNet_internal = nn.Conv2d(chs, chs, kernel_size=(1,3), padding=(0,1), bias=False, groups=chs)
         self.xNet_left = nn.Conv2d(chs, chs, kernel_size=(1,3), padding=(0,1), bias=False, groups=chs)
         self.xNet_right = nn.Conv2d(chs, chs, kernel_size=(1,3), padding=(0,1), bias=False, groups=chs)
@@ -29,31 +30,51 @@ class DerivativeNet(nn.Module):
         self.yNet_bottom.requires_grad_(False)
 
 
-    def shrink_mask(self, msk, direction):
+    def shrink_mask(self, direction):
+        '''Extract internal node masks by shrinking or erode'''
         if(direction == 'x'):
             kernel = torch.ones((1, 1, 1, 3), dtype=torch.float32)
-            conv_result = F.conv2d(msk, kernel, padding=(0,1))
+            conv_result = F.conv2d(self.nmask, kernel, padding=(0,1))
             shrink_mask = (conv_result == 3).float() #(ensure all three pixels were 'on')
         if(direction == 'y'):
             kernel = torch.ones((1, 1, 3, 1), dtype=torch.float32)
-            conv_result = F.conv2d(msk, kernel, padding=(1,0))
+            conv_result = F.conv2d(self.nmask, kernel, padding=(1,0))
             shrink_mask = (conv_result == 3).float() #(ensure all three pixels were 'on')
         return shrink_mask
 
-    def eroded_pixels(self, mask, direction):
+    def eroded_pixels(self, direction):
+        '''Extract edges that can use edge kernels'''
         if(direction == 'x'):
-            cumsum = torch.cumsum(mask, dim=-1) # the cumulative sum along the width dimension
-            edge1 = (cumsum == 1) # positions where cumsum changes from 0 to a positive value
-            row_max = cumsum.max(dim=-1, keepdim=True).values
-            edge2 = (cumsum == row_max) & mask
+            edge1 = torch.zeros_like(self.nmask, dtype=torch.bool)
+            edge2 = torch.zeros_like(self.nmask, dtype=torch.bool)
+            padded_mask = F.pad(self.nmask, (1,1,0,0), 'constant', 0)
+            differences = padded_mask[..., 1:] - padded_mask[..., :-1]
+            left_transitions = (differences == 1)
+            right_transitions = (differences == -1)
+            leftmost_indices = torch.nonzero(left_transitions) 
+            rightmost_indices = torch.nonzero(right_transitions) - torch.tensor([0, 0, 0, 1])
+            # Mark the leftmost and rightmost pixels
+            for idx in leftmost_indices:
+                edge1[idx[0], idx[1], idx[2], idx[3]] = 1
+            for idx in rightmost_indices:
+                edge2[idx[0], idx[1], idx[2], idx[3]] = 1
         if(direction == 'y'):
-            cumsum = torch.cumsum(mask, dim=-2) # the cumulative sum along the height dimension
-            edge1 = (cumsum == 1) # positions where cumsum changes from 0 to a positive value
-            col_max = cumsum.max(dim=-2, keepdim=True).values
-            edge2 = (cumsum == col_max) & mask
+            edge1 = torch.zeros_like(self.nmask, dtype=torch.bool)
+            edge2 = torch.zeros_like(self.nmask, dtype=torch.bool)
+            padded_mask = F.pad(self.nmask, (0,0,1,1), 'constant', 0)
+            differences = padded_mask[:, :, 1:] - padded_mask[:, :, :-1]
+            top_transitions = (differences == 1)
+            bottom_transitions = (differences == -1)
+            topmost_indices = torch.nonzero(top_transitions) 
+            bottommost_indices = torch.nonzero(bottom_transitions) - torch.tensor([0, 0, 1, 0])
+            # Mark the pixels
+            for idx in topmost_indices:
+                edge1[idx[0], idx[1], idx[2], idx[3]] = 1
+            for idx in bottommost_indices:
+                edge2[idx[0], idx[1], idx[2], idx[3]] = 1
         return edge1, edge2
 
-    def forward(self, u, mask, direction):
+    def forward(self, u, direction):
         '''
         edge_mask = mask - eroded_mask
         1- compute the internal derivative
@@ -62,8 +83,8 @@ class DerivativeNet(nn.Module):
         4- extract the edge derivative using edge_mask
         5- add the internal and edge derivative together
         '''
-        eroded_mask = self.shrink_mask(mask, direction)
-        edge1_mask, edge2_mask = self.eroded_pixels(mask.bool(), direction)
+        eroded_mask = self.shrink_mask(direction)
+        edge1_mask, edge2_mask = self.eroded_pixels(direction)
 
         if(direction == 'x'):
             internal_d = eroded_mask * self.xNet_internal(u)

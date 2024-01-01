@@ -18,3 +18,11 @@ def project_input(input_array):
     output[:rows, 1:] = np.logical_or(output[:rows, 1:], mask)
 
     return output
+
+def rotate_image(image_array, angle):
+    if angle == 90:
+        return np.flipud(np.transpose(image_array))
+    elif angle == 180:
+        return np.flipud(np.fliplr(image_array))
+    elif angle == 270:
+        return np.fliplr(np.transpose(image_array))
