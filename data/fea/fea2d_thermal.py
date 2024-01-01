@@ -64,6 +64,7 @@ class ThermalFEM():
             for j, q in enumerate(qpts_flux.T):
                 [N, dNdp] = self.grid.shapefunc(q)
                 J = np.dot(xe, dNdp)  # [2, 2]
+                
                 dNdx = np.dot(dNdp, np.linalg.inv(J))  # [4, 2]
                 # qh = np.dot(de, dNdx)  # [1, 2], test purpose
                 qh = -alpha * np.dot(de, dNdx)  # [1, 2]
@@ -77,7 +78,7 @@ class ThermalFEM():
             if count_contributions[node_idx] > 0:
                 self.flux_avg[node_idx, :] = total_flux[node_idx, :] / count_contributions[node_idx]
 
-        return self.flux_avg
+        return count_contributions
 
     def ComputeHeatFlux(self):
         H = np.zeros((self.n_nodes,self.n_nodes))

@@ -3,6 +3,10 @@ Copyright (C) 2019 NVIDIA Corporation.  All rights reserved.
 Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode).
 
 ====================
+31-Dec-2023 by Changyu Meng
+Deleted twonodeKernel2d function 
+Created dxKernel2d and dyKernel2d function for post-processing
+
 27-Oct-2023 by Changyu Meng
 Added feanetkernel2d function
 Moved quadKernel2d for "quad" element to feanetkernel2d function
@@ -11,9 +15,6 @@ Moved quadKernel2d for "quad" element to feanetkernel2d function
 Created PacPool1d for 1D finite element analysis
 Created pacpool1d, feanetkernel1d
 Added linearKernel1d function for linear two-node element kernel calculation
-
-28-Sep-2023 by Changyu Meng
-Added twonodeKernel2d function for linear two-node element kernel calculation
 
 10-Dec-2022 by Changyu Meng
 Clone from: https://github.com/NVlabs/pacnet/tree/th14
@@ -120,6 +121,49 @@ def nd2col(input_nd, kernel_size, stride=1, padding=0, output_padding=0, dilatio
     return output
 
 
+def dxKernel2d(input, mode, stride, padding, dilation):
+    '''
+    Kernel function definition for post-processing
+    Input is the element mask (0 or 1); Output is the node-based kernel
+    '''
+    assert (padding == (1, 1))
+
+    fn_dilation = _pair(dilation)
+    fn_padding = _pair(padding)
+    fn_stride = _pair(stride)
+
+    bs, _, in_h, in_w = input.shape
+
+    # unfold a material map, use a 2x2 window
+    window = (2, 2)
+    out_h = (in_h + 2 * fn_padding[0] - fn_dilation[0]
+             * (window[0] - 1) - 1) // fn_stride[0] + 1
+    out_w = (in_w + 2 * fn_padding[1] - fn_dilation[1]
+             * (window[1] - 1) - 1) // fn_stride[1] + 1
+    cols = F.unfold(input.view(bs, 1, in_h, in_w), window,
+                    fn_dilation, fn_padding, fn_stride)
+    cols = cols.view(bs, 1, window[0], window[1], out_h, out_w)
+
+    # calculate kernel components
+    e4 = cols[:, 0, :, 0, 0, :, :].view(bs, 1, 1, 1, out_h, out_w).contiguous()
+    e3 = cols[:, 0, :, 0, 1, :, :].view(bs, 1, 1, 1, out_h, out_w).contiguous()
+    e2 = cols[:, 0, :, 1, 1, :, :].view(bs, 1, 1, 1, out_h, out_w).contiguous()
+    e1 = cols[:, 0, :, 1, 0, :, :].view(bs, 1, 1, 1, out_h, out_w).contiguous()
+
+    # count the element
+    emask_padded = F.pad(input, (1, 1, 1, 1), mode='constant', value=0)
+    kernel = torch.ones((1, 1, 2, 2), dtype=emask_padded.dtype)
+    count = F.conv2d(emask_padded, kernel, padding=0)
+
+    # combine all kernel components together
+    if(mode == 'x'):
+        output = torch.cat((-e1-e3, e1-e2+e3-e4, e2+e4), dim=3)
+    if(mode == 'y'):
+        output = torch.cat((e3+e4, e1+e2-e3-e4, -e1-e2), dim=2)
+
+    return output/count.view(output.shape)
+
+
 def linearKernel1d(input, stride, padding, dilation):
     '''
     Kernel function definition for linear two-node FEA element (no need to create a pytorch autograd function)
@@ -153,45 +197,6 @@ def linearKernel1d(input, stride, padding, dilation):
 
     return output # shape (bs, ks, out_l, 3)
 
-
-def twonodeKernel2d(input, stride, padding, dilation):
-    '''
-    Kernel function definition for linear two-node FEA element (no need to create a pytorch autograd function)
-    Tensor index:  11, 12, 21, 22
-    Channel number: 0,  1,  2,  3
-    '''
-    assert (padding == (1, 1))
-
-    fn_dilation = _pair(dilation)
-    fn_padding = _pair(padding)
-    fn_stride = _pair(stride)
-
-    bs, ch, ks, in_h, in_w = input.shape
-
-    # unfold a material map, use a 2x2 window
-    window = (2, 2)
-    out_h = (in_h + 2 * fn_padding[0] - fn_dilation[0]
-             * (window[0] - 1) - 1) // fn_stride[0] + 1
-    out_w = (in_w + 2 * fn_padding[1] - fn_dilation[1]
-             * (window[1] - 1) - 1) // fn_stride[1] + 1
-    cols = F.unfold(input.view(bs, ch*ks, in_h, in_w), window,
-                    fn_dilation, fn_padding, fn_stride)
-    cols = cols.view(bs, ch, ks, window[0], window[1], out_h, out_w)
-
-    # calculate kernel components
-    K11 = cols[:, 0, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K12 = cols[:, 1, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K21 = cols[:, 2, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K22 = cols[:, 3, :, 0, 0, :, :].view(bs, ks, 1, 1, out_h, out_w).contiguous()
-    K_zero = torch.zeros_like(K11).contiguous()
-
-    # combine all kernel components together
-    row1 = torch.cat((K_zero, K21, K_zero), dim=3)
-    row2 = torch.cat((K21, K11+K22, K12), dim=3)
-    row3 = torch.cat((K_zero, K12, K_zero), dim=3)
-    output = torch.cat((row1, row2, row3), dim=2)
-
-    return output
 
 def quadKernel2d(input, stride, padding, dilation):
     '''
