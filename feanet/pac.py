@@ -145,10 +145,11 @@ def dxKernel2d(input, mode, stride, padding, dilation):
     cols = cols.view(bs, 1, window[0], window[1], out_h, out_w)
 
     # calculate kernel components
-    e4 = cols[:, 0, :, 0, 0, :, :].view(bs, 1, 1, 1, out_h, out_w).contiguous()
-    e3 = cols[:, 0, :, 0, 1, :, :].view(bs, 1, 1, 1, out_h, out_w).contiguous()
-    e2 = cols[:, 0, :, 1, 1, :, :].view(bs, 1, 1, 1, out_h, out_w).contiguous()
-    e1 = cols[:, 0, :, 1, 0, :, :].view(bs, 1, 1, 1, out_h, out_w).contiguous()
+    e4 = cols[:, 0, 0, 0, :, :].view(bs, 1, 1, 1, out_h, out_w).contiguous()
+    e3 = cols[:, 0, 0, 1, :, :].view(bs, 1, 1, 1, out_h, out_w).contiguous()
+    e2 = cols[:, 0, 1, 1, :, :].view(bs, 1, 1, 1, out_h, out_w).contiguous()
+    e1 = cols[:, 0, 1, 0, :, :].view(bs, 1, 1, 1, out_h, out_w).contiguous()
+    e0 = torch.zeros_like(e1).contiguous()
 
     # count the element
     emask_padded = F.pad(input, (1, 1, 1, 1), mode='constant', value=0)
@@ -156,12 +157,18 @@ def dxKernel2d(input, mode, stride, padding, dilation):
     count = F.conv2d(emask_padded, kernel, padding=0)
 
     # combine all kernel components together
-    if(mode == 'x'):
-        output = torch.cat((-e1-e3, e1-e2+e3-e4, e2+e4), dim=3)
-    if(mode == 'y'):
-        output = torch.cat((e3+e4, e1+e2-e3-e4, -e1-e2), dim=2)
+    if(mode == 'dx'):
+        row1 = torch.cat((e0, e0, e0), dim=3)
+        row2 = torch.cat((-e1-e4, e1-e2-e3+e4, e2+e3), dim=3)
+        row3 = torch.cat((e0, e0, e0), dim=3)
+        output = torch.cat((row1, row2, row3), dim=2)
+    if(mode == 'dy'):
+        row1 = torch.cat((e0, e3+e4, e0), dim=3)
+        row2 = torch.cat((e0, e1+e2-e3-e4, e0), dim=3)
+        row3 = torch.cat((e0, -e1-e2, e0), dim=3)
+        output = torch.cat((row1, row2, row3), dim=2)
 
-    return output/count.view(output.shape)
+    return output/count.view(bs, 1, 1, 1, out_h, out_w).clamp(min=1)
 
 
 def linearKernel1d(input, stride, padding, dilation):
@@ -608,8 +615,10 @@ def feanetkernel2d(input, kernel_size=0, stride=1, padding=0, output_padding=0, 
 
     if (kernel_type == 'quad'):
         output = quadKernel2d(input, stride, padding, dilation)
-    elif (kernel_type == 'two_node'):
-        output = twonodeKernel2d(input, stride, padding, dilation)
+    if (kernel_type == 'dx'):
+        output = dxKernel2d(input, 'dx', stride, padding, dilation)
+    if (kernel_type == 'dy'):
+        output = dxKernel2d(input, 'dy', stride, padding, dilation)
 
     return output
 
@@ -1130,7 +1139,7 @@ class PacPool2d(_PacConvNd):
         self.native_impl = native_impl
 
     def compute_kernel(self, input_for_kernel, input_mask=None):
-        if(self.kernel_type=="quad" or self.kernel_type=='two_node'):
+        if(self.kernel_type=="quad" or self.kernel_type=="dx" or self.kernel_type=="dy"):
             return feanetkernel2d(input_for_kernel, kernel_size=self.kernel_size, stride=self.stride, 
                                   padding=self.padding, dilation=self.dilation, kernel_type=self.kernel_type)
         else:

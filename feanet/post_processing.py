@@ -27,7 +27,7 @@ class ThermalPostProcessing(nn.Module):
         self.emask = emask
         self.flux = None
         self.m_node = ConvertNodeMaterial(m, emask) # (bs, 1, h+1, w+1)
-        self.deriv = DerivativeNet(h, self.kf, nmask)
+        self.deriv = DerivativeNet(h, nmask, emask)
 
     def ComputeFlux(self, u):
         B, _, H, W = u.shape
