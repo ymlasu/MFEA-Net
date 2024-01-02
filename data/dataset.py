@@ -19,7 +19,7 @@ class MechanicalDataSet(Dataset):
         self.material = np.array(h5['material'], dtype=np.double)
         self.source = np.array(h5['source'], dtype=np.double)
         self.solution = np.array(h5['solution'], dtype=np.double)
-        self.post = np.array(h5['post'], dtype=np.double)
+        # self.post = np.array(h5['post'], dtype=np.double)
         self.totensor = ToTensor()
         self.transform = transform
         self.target_transform = target_transform
@@ -38,7 +38,7 @@ class MechanicalDataSet(Dataset):
         neumann_conn_tensor = self.totensor(self.neumann_conn[idx]).to(self.device)
         node_mask_tensor = torch.flip(self.totensor(self.node_mask[idx]), dims=[1]).to(self.device)
         elem_mask_tensor = torch.flip(self.totensor(self.elem_mask[idx]), dims=[1]).to(self.device)
-        post_tensor = torch.flip(self.totensor(self.post[idx]), dims=[1]).to(self.device)
+        # post_tensor = torch.flip(self.totensor(self.post[idx]), dims=[1]).to(self.device)
         if self.transform:
             node_mask_tensor = self.transform(node_mask_tensor)
             elem_mask_tensor = self.transform(elem_mask_tensor)
@@ -49,6 +49,6 @@ class MechanicalDataSet(Dataset):
             dirich_value_tensor = self.transform(dirich_value_tensor)
             neumann_idx_tensor = self.transform(neumann_idx_tensor)
             neumann_value_tensor = self.transform(neumann_value_tensor)
-            post_tensor = self.transform(post_tensor)
-        return elem_mask_tensor, node_mask_tensor, dirich_idx_tensor, dirich_value_tensor, neumann_idx_tensor, neumann_value_tensor, neumann_conn_tensor, material_tensor, source_tensor, solution_tensor, post_tensor
+            # post_tensor = self.transform(post_tensor)
+        return elem_mask_tensor, node_mask_tensor, dirich_idx_tensor, dirich_value_tensor, neumann_idx_tensor, neumann_value_tensor, neumann_conn_tensor, material_tensor, source_tensor, solution_tensor
     

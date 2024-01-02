@@ -9,13 +9,14 @@ def ConvertNodeMaterial(m, emask):
     '''Convert the element-based material field into node-based ones'''
     m_padded = F.pad(m*emask, (1, 1, 1, 1), mode='constant', value=0)
     emask_padded = F.pad(emask, (1, 1, 1, 1), mode='constant', value=0)
-    kernel = torch.ones((1, 1, 2, 2), dtype=m.dtype, device=m.device) # create a kernel for convolution
 
     # Perform convolution to sum adjacent elements
-    conv_sum = F.conv2d(m_padded, kernel, padding=0, groups=m.shape[1])
+    kernel1 = torch.ones((m.shape[1], 1, 2, 2), dtype=m.dtype, device=m.device) # create a kernel for convolution
+    conv_sum = F.conv2d(m_padded, kernel1, padding=0, groups=m.shape[1])
 
     # Convolve the mask to get the count of valid adjacent elements
-    count = F.conv2d(emask_padded, kernel, padding=0, groups=emask.shape[1])
+    kernel2 = torch.ones((1, 1, 2, 2), dtype=m.dtype, device=m.device) # create a kernel for convolution
+    count = F.conv2d(emask_padded, kernel2, padding=0, groups=emask.shape[1])
 
     return conv_sum / count.clamp(min=1) # Calculate the average
 
@@ -47,7 +48,7 @@ class ElasticPostProcessing(nn.Module):
         self.stress = None
         self.emask = emask
         self.m_node = ConvertNodeMaterial(stiffness, emask) # (bs, 6, h+1, w+1)
-        self.deriv = DerivativeNet(h, self.kf, nmask)
+        self.deriv = DerivativeNet(h, nmask, emask)
         
     def ComputeStiffnessMatrix(self, mode, m):
         '''Compute stiffness matrix using the E, v field'''
@@ -63,10 +64,32 @@ class ElasticPostProcessing(nn.Module):
             d33 = (E/2/(1+v)).contiguous()
         return torch.cat((d11.clone(), d12.clone(), d33.clone()), dim=1)
 
-
     def ComputeStrain(self, u):
-        B, _, H, W = u.shape
+        B, _, H, W = u.shape # u has two channels
         self.strain = torch.zeros((B,3,H,W)).double()
+        u1 = torch.unsqueeze(u[:, 0, :, :], dim=1) # shape (B, 1, H, W)
+        u2 = torch.unsqueeze(u[:, 1, :, :], dim=1)
+        self.strain[:,0,:,:] = self.deriv(u1, 'x')
+        self.strain[:,1,:,:] = self.deriv(u2, 'y')
+        self.strain[:,2,:,:] = self.deriv(u1, 'y')+self.deriv(u2, 'x')
+        return self.strain
     
     def ComputeStress(self, u):
+        B, _, H, W = u.shape # u has two channels
         self.ComputeStrain(u)
+        self.stress = torch.zeros((B,3,H,W)).double()
+        e1 = self.strain[:, 0, :, :].contiguous() # strain tensor
+        e2 = self.strain[:, 1, :, :].contiguous()
+        e3 = self.strain[:, 2, :, :].contiguous()
+        d11 = self.m_node[:, 0, :, :].contiguous() # stiffness tensor
+        d12 = self.m_node[:, 1, :, :].contiguous()
+        d33 = self.m_node[:, 2, :, :].contiguous()
+        self.stress[:,0,:,:] = d11*e1+d12*e2
+        self.stress[:,1,:,:] = d12*e1+d11*e2
+        self.stress[:,2,:,:] = d33*e3
+        return self.stress
+    
+    def ComputeStrainEnergyDensity(self):
+        self.energy = 0.5 * (self.strain*self.stress).sum(dim=1)
+        self.energy = torch.unsqueeze(self.energy, dim=1)
+        return self.energy
