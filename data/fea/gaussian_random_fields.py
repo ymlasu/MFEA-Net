@@ -10,7 +10,7 @@ from __future__ import print_function
 # Main dependencies
 import numpy
 import scipy.fftpack
-
+import random
 
 def fftind(size):
     """ Returns a numpy array of shifted Fourier coordinates k_x k_y.
@@ -92,6 +92,14 @@ def gaussian_random_field(alpha = 3.0,
     return gfield
 
 
+# self-defined function
+def generate_rf(n, a_interval):
+    alpha = random.uniform(0,10)
+    a0, a1 = a_interval[0],a_interval[1]
+    field = gaussian_random_field(alpha=alpha, size=n, flag_normalize=False)
+    f_min, f_max = numpy.min(field), numpy.max(field)
+    rf = (a1-a0)*(field-f_min)/(f_max-f_min)+a0
+    return rf
 
 
 def main():
