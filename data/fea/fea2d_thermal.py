@@ -13,7 +13,7 @@ class ThermalFEM():
         self.qpts = np.array([[-1, 1, 1, -1], [-1, -1, 1, 1]])/np.sqrt(3) #[2x4], integration points
         self.n_nodes = grid.points.shape[0]
         self.d = np.zeros(self.n_nodes, dtype=np.float32)
-        self.f = np.zeros_like(f_val, dtype=np.float32)
+        self.f = np.zeros(self.n_nodes, dtype=np.float32)
         self.flux = np.zeros((self.n_nodes,2), dtype=np.float32)
         self.flux_avg = np.zeros((self.n_nodes,2), dtype=np.float32)
         self.residual = np.zeros_like(self.d)
@@ -103,10 +103,11 @@ class ThermalFEM():
         self.flux[:,1] = np.linalg.solve(H, y[:,1])
         return H
 
-    def UpdateSource(self, f_val = None):
+    def UpdateSource(self, f_val):
         '''
         Return the rhs internal sourcing term with modification from finite element term
         '''
+        f_val = f_val.reshape(-1)
         for c in self.grid.cells:
             xe = self.grid.points[c,:].T[:2,:] #[2x4]
             fe = np.zeros(4)
@@ -120,15 +121,17 @@ class ThermalFEM():
         '''
         In Neumann bc, the heat flux is assumed to flow out of the domain
         '''
-        for neumann_conn in self.grid.neumann_conn_list:
+        for k, neumann_conn in enumerate(self.grid.neumann_conn_list):
+            neumann_val = bc_val[:,:,k].reshape(-1)
             for c in neumann_conn:
                 xe = self.grid.points[c,:][:,:2] #[2x2]
                 le = np.linalg.norm(xe[1,:]-xe[0,:])
                 for q in [1./np.sqrt(3), -1./np.sqrt(3)]:
                     N = 0.5*np.array([1-q, 1+q])
-                    self.f[c] += N.squeeze() * bc_val[c] * le/2 #[2x1]
+                    self.f[c] += N.squeeze() * neumann_val[c] * le/2 #[2x1]
 
     def DirichBC(self, bc_val):
+        bc_val = bc_val.reshape(-1)
         self.d[self.grid.nonvalid_node] = 0.0 # response should be zero at nonvalid nodes
         self.d[self.grid.dirich_node] = bc_val[self.grid.dirich_node]
 

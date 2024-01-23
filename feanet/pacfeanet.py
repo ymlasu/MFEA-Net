@@ -185,29 +185,31 @@ class PACFEANet(nn.Module):
         
     def calc_neumannbc(self, h, t, t_conn):
         # t_conn has shape of (bs, n_conn, h, w), n_conn is the number of connection lists
+        # t channel will be 1*n_conn for thermal problems; 2*n_conn for elastic problems
         bs, n_conn, hs, ws = t_conn.shape
         if ((self.t_kernels == []) or (h != self.h)):
             self.h = h
-            for i in range(n_conn):
-                traction_elements = self.traction_element(t_conn[:,i,:,:])
+            for c in range(n_conn):
+                traction_elements = self.traction_element(t_conn[:,c,:,:])
                 t_kernels, _ = self.sac_tnet.compute_kernel(traction_elements) # output (bs, ks, 3, l)
                 self.t_kernels.append(t_kernels)
 
         # stack all the neumann bc together
         t_baseline = torch.zeros(bs,self.kf,hs,ws)
-        for i in range(n_conn):
-            t_conn_flat = t_conn[0,i,:,:].reshape(-1)
-            conn = t_conn_flat[t_conn_flat != -1]
-            neumann_node = conn.unsqueeze(0).unsqueeze(0).expand(bs, self.kf, conn.shape[0])
-            # get the 1-D neumann boundary value
-            t_flat = torch.flip(t, dims=[2]).view(bs,self.kf,hs*ws)
-            t_neumann = t_flat.gather(2, neumann_node) # find element in t_flat for dim=2
-            # perform 1-D convolution
-            t_conv = self.sac_tnet(t_neumann, None, self.t_kernels[i])
-            # convert back to neumann boundary map, zero it first
-            t_flat.zero_()
-            t_flat.scatter_(-1, neumann_node, t_conv) # scatter is the inverse function of gather
-            t_baseline = t_baseline + torch.flip(t_flat.view(bs,self.kf,hs,ws), dims=[2])
+        for b in range(bs):
+            for c in range(n_conn):
+                t_conn_flat = t_conn[b,c,:,:].reshape(-1)
+                conn = t_conn_flat[t_conn_flat != -1]
+                neumann_node = conn.unsqueeze(0).unsqueeze(0).expand(1, self.kf, conn.shape[0])
+                # get the 1-D neumann boundary value
+                t_flat = torch.flip(t[b,self.kf*c:self.kf*(c+1)].unsqueeze(0), dims=[2]).view(1,self.kf,hs*ws)
+                t_neumann = t_flat.gather(2, neumann_node) # find element in t_flat for dim=2
+                # perform 1-D convolution
+                t_conv = self.sac_tnet(t_neumann, None, self.t_kernels[c])
+                # convert back to neumann boundary map, zero it first
+                t_flat.zero_()
+                t_flat.scatter_(-1, neumann_node, t_conv) # scatter is the inverse function of gather
+                t_baseline[b] = t_baseline[b] + torch.flip(t_flat.view(self.kf,hs,ws), dims=[1])
         return t_baseline
 
     def calc_F(self, h, f, t, t_conn, m):
