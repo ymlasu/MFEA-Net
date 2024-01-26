@@ -33,9 +33,8 @@ class PsiNet(nn.Module):
         self.smoother = nn.ModuleList([nn.Conv2d(self.ku, self.ku, 3, padding=1, bias=False)
                                          for _ in range(nb_layers)])
 
-    def forward(self, m, x, dirich_idx):
+    def forward(self, x, dirich_idx):
         '''
-        m: material field
         x: error between Jacobi solution and initial guess '''
         
         # bs0, ku0, h0, w0 = x.size()
@@ -50,15 +49,15 @@ class PsiIterator(nn.Module):
     def __init__(self, 
                  dev,
                  h, 
+                 n_elem,
+                 no_neumann,
                  psi_net=None,
                  grid=None,
-                 n=2**5,
                  nb_layers=3,
                  batch_size=1,
                  max_epochs=1000,
                  mode='thermal',
-                 iterator='jac',
-                 model_dir=None):
+                 iterator='jac'):
         super(PsiIterator, self).__init__()
         self.device = dev
         self.h = h
@@ -69,31 +68,30 @@ class PsiIterator(nn.Module):
         self.loss = nn.MSELoss()
 
         if(grid is None):
-            self.grid = SingleGrid(h, n, mode=mode, dev=self.device)
+            self.grid = SingleGrid(h, n_elem, mode=mode, dev=self.device, no_neumann=no_neumann)
         else:
             self.grid = grid
 
         if(iterator == 'jac'):
-            self.psi_net = None # don't use neural network model to modify Jacobi iterator
-        else:
+            self.psi_net = None # use original Jacobi iterator
+        elif(iterator == 'psi'):
             if(psi_net == None):
                 self.psi_net = PsiNet(nb_layers=nb_layers, mode=self.mode).to(self.device).double()
             else:
                 self.psi_net = psi_net.to(self.device).double()
             self.optimizer = torch.optim.Adadelta(self.psi_net.parameters())
-            self.model_dir=model_dir
 
-    def PsiRelax(self, v, m, msk, d, d_idx, term_KU=None, term_F=None, h=None, f=None, t=None, t_conn=None, num_sweeps_down=1):
+    def PsiRelax(self, v, m, nmsk, d, d_idx, term_KU=None, term_F=None, h=None, f=None, t=None, t_conn=None, num_sweeps_down=1):
         '''
         Perform a fixed number of Psi iteration
         '''
         u = v.clone()
         for _ in range(num_sweeps_down):
-            jac_it = self.grid.jac.jacobi_convolution(u, m, msk, d, d_idx, term_KU, term_F, h, f, t, t_conn)
+            jac_it = self.grid.jac.jacobi_convolution(u, m, nmsk, d, d_idx, term_KU, term_F, h, f, t, t_conn)
             if (self.iterator == 'jac'):
                 return jac_it
             else:
-                return jac_it + self.psi_net(m, jac_it-u, d_idx) 
+                return jac_it + self.psi_net(jac_it-u, d_idx) 
 
     def RandomSampling(self, x):
         u = torch.randn_like(x).double().to(self.device)
@@ -102,14 +100,14 @@ class PsiIterator(nn.Module):
     def TrainSingleEpoch(self, train_dataloader):
         running_loss = 0.
         for i, data in enumerate(train_dataloader):
-            mask_train, dirich_idx_train, dirich_value_train, traction_idx_train, traction_value_train, traction_conn_train, material_train, f_train, u_train = data
+            emask_train, nmask_train, dirich_idx_train, dirich_value_train, traction_idx_train, traction_value_train, traction_conn_train, material_train, f_train, u_train = data
         
             #print(u_train.shape)
             self.optimizer.zero_grad() # zero the gradients for every batch
             k = 1 #random.randint(1,20)
 
             uu = self.RandomSampling(f_train)
-            u_out = self.PsiRelax(uu, material_train, mask_train, dirich_value_train, dirich_idx_train, None, None, self.h, f_train, traction_value_train, traction_conn_train, k)
+            u_out = self.PsiRelax(uu, material_train, nmask_train, dirich_value_train, dirich_idx_train, None, None, self.h, f_train, traction_value_train, traction_conn_train, k)
             loss_i = self.loss(u_out, u_train)
             loss_i.backward()
             self.optimizer.step()
@@ -119,7 +117,7 @@ class PsiIterator(nn.Module):
         last_loss = running_loss/(i+1)
         return last_loss
     
-    def Train(self, training_set):
+    def Train(self, training_set, model_name, model_dir):
         train_dataloader = DataLoader(training_set, batch_size=self.batch_size, shuffle=True)
         loss_train = torch.zeros((self.max_epochs, 1))
         avg_loss = self.TrainSingleEpoch(train_dataloader)
@@ -132,7 +130,7 @@ class PsiIterator(nn.Module):
                 print('Step-'+str(epoch)+' loss:', avg_loss)
 
             # save the model's state
-            mpath = os.path.join(self.model_dir,self.mode+'_'+id_generator()+'.pth')
+            mpath = os.path.join(model_dir,model_name+'.pth')
             torch.save(self.psi_net.state_dict(), mpath)
             loss_train[epoch] = avg_loss
         return loss_train

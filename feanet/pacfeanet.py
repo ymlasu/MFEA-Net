@@ -6,10 +6,11 @@ import feanet.pac as pac
 
 
 class PACFEANet(nn.Module):
-    def __init__(self, device, mode='thermal', kernel_size=3):
+    def __init__(self, device, no_neumann, mode='thermal', kernel_size=3):
         super(PACFEANet, self).__init__()
         self.mode = mode
         self.device = device
+        self.no_neumann = no_neumann # false of considering neumann boundary 
         self.h = 1.  # pixel size
         self.km, self.ku, self.kf = 1, 1, 1  # thermal problem
         if (self.mode != 'thermal'):
@@ -162,13 +163,13 @@ class PACFEANet(nn.Module):
             u = torch.cat((u, initial_u), dim=1)
         return u
 
-    def calc_KU(self, u, m, msk):
+    def calc_KU(self, u, m, nmsk):
         if ((self.K_kernels == None) or (not torch.equal(m, self.materials))):
             stiffness = self.thermal_elements(m)
             if (self.mode == 'elastic_pstress' or self.mode == 'elastic_pstrain'):
                 stiffness = self.elastic_elements(m) # (bs, 16, 4, h_elem, w_elem)
             self.K_kernels = self.sac_Knet.compute_kernel(stiffness) # (bs, ks, 3, 3, h_node, w_node)
-            self.mask = msk.unsqueeze(2).unsqueeze(3).repeat(1, 1, 3, 3, 1, 1) # (bs, ku*kf, 3, 3, h_node, w_node)
+            self.mask = nmsk.unsqueeze(2).unsqueeze(3).repeat(1, 1, 3, 3, 1, 1) # (bs, ku*kf, 3, 3, h_node, w_node)
             self.materials = m
 
         u_clone = self.input_clone(u, self.kf)
@@ -213,12 +214,12 @@ class PACFEANet(nn.Module):
         return t_baseline
 
     def calc_F(self, h, f, t, t_conn, m):
-        if (t_conn == None):
+        if (self.no_neumann):
             return self.calc_bodyforce(h, f, m)
         else:
             return self.calc_bodyforce(h, f, m)+self.calc_neumannbc(h, t, t_conn)
 
-    def forward(self, term_KU=None, term_F=None, h=None, u=None, d_idx=None, f=None, t=None, t_conn=None, m=None, msk=None):
+    def forward(self, term_KU=None, term_F=None, h=None, u=None, d_idx=None, f=None, t=None, t_conn=None, m=None, nmsk=None):
         # for elasticity problems, m(material_input) has two channels, E and v
         # h is pixel size
         # u is initial solution
@@ -226,7 +227,7 @@ class PACFEANet(nn.Module):
         # t is traction map, with kf channels
         self.term_KU = term_KU
         if (term_KU == None):
-            self.term_KU = self.calc_KU(u, m, msk)
+            self.term_KU = self.calc_KU(u, m, nmsk)
 
         self.term_F = term_F
         if (term_F == None):

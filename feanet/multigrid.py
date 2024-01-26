@@ -38,7 +38,7 @@ class ProlongationNet(nn.Module):
 
 class MultiGrid(nn.Module):
     '''Define the multigrid problem for 2D, n is the finest grid size'''
-    def __init__(self, h, n_elem, pacnet, device, nb_layers, mode='thermal', iterator = 'jac'):
+    def __init__(self, h, n_elem, no_neumann, pacnet, device, nb_layers, mode='thermal', iterator = 'jac'):
         super(MultiGrid, self).__init__()
 
         # Problem parameters
@@ -55,7 +55,7 @@ class MultiGrid(nn.Module):
         if(self.mode != 'thermal'):
             self.km, self.ku, self.kf = 2, 2, 2
 
-        self.iterators = self.IteratorDict() # dictionary of iterators
+        self.iterators = self.IteratorDict(no_neumann) # dictionary of iterators
 
         # Inter-grid communication network models
         self.conv = RestrictionNet(self.kf).double().to(device)
@@ -66,11 +66,11 @@ class MultiGrid(nn.Module):
 
         self.mse_loss = nn.MSELoss()
     
-    def IteratorDict(self):
+    def IteratorDict(self, no_neumann):
         iterators = {}
         for i in range(self.L):
             prob_size = int(self.n/(2.**i))
-            iterators[i] = PsiIterator(self.device, h=self.h, psi_net=self.pacnet, n=prob_size, nb_layers=self.nb_layers, mode=self.mode, iterator=self.iterator)
+            iterators[i] = PsiIterator(self.device, self.h, prob_size, no_neumann, psi_net=self.pacnet, nb_layers=self.nb_layers, mode=self.mode, iterator=self.iterator)
         return iterators
             
     def ProblemDictArray(self, f, t, t_conn, d, d_idx, m, msk):
@@ -123,8 +123,8 @@ class MultiGrid(nn.Module):
         self.last_v = U.clone()
         return self.Step(U)
 
-    def Relax(self, iter, u, m, msk, d, d_idx, term_KU=None, term_F=None, h=None, f=None, t=None, t_conn=None, n_iter=1):
-        return iter.PsiRelax(u, m, msk, d, d_idx, term_KU, term_F, h, f, t, t_conn, n_iter)
+    def Relax(self, iter, u, m, nmsk, d, d_idx, term_KU=None, term_F=None, h=None, f=None, t=None, t_conn=None, n_iter=1):
+        return iter.PsiRelax(u, m, nmsk, d, d_idx, term_KU, term_F, h, f, t, t_conn, n_iter)
 
     def Step(self, v):
         '''Input v is the initial solution on the finest grid'''
@@ -142,7 +142,8 @@ class MultiGrid(nn.Module):
             # calculate fine grid residual
             rF = self.iterators[j].grid.net(u=self.iterators[j].grid.v, 
                                             d_idx=self.p_arr[j]['d_idx'],
-                                            m=self.p_arr[j]['m'], msk=self.p_arr[j]['msk'],
+                                            m=self.p_arr[j]['m'], 
+                                            nmsk=self.p_arr[j]['msk'],
                                             term_F=self.iterators[j].grid.f)
             self.iterators[j+1].grid.f = self.Restrict(rF)
             self.iterators[j+1].grid.v = torch.zeros_like(self.iterators[j+1].grid.f) 
