@@ -94,7 +94,7 @@ class MultiGrid(nn.Module):
         for i in range(self.L-1):
             prob = {}
             prob['h'] = self.h*(2.**(i+1))
-            prob['t'] = 0.*F.conv2d(self.p_arr[i]['t'], kernel_f, stride=2, groups=self.kf) # Neumann boundary is homogeneous at coarse grids
+            prob['t'] = None
             prob['t_conn'] = None
             prob['d'] = 0.*F.conv2d(self.p_arr[i]['d'], kernel_u, stride=2, groups=self.ku) # Dirichlet boundary is homogeneous at coarse grids
             prob['d_idx'] = F.conv2d(self.p_arr[i]['d_idx'], kernel_u, stride=2, groups=self.ku)
