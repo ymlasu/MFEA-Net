@@ -38,7 +38,7 @@ class ProlongationNet(nn.Module):
 
 class MultiGrid(nn.Module):
     '''Define the multigrid problem for 2D, n is the finest grid size'''
-    def __init__(self, h, n_elem, no_neumann, pacnet, device, nb_layers, mode='thermal', iterator = 'jac'):
+    def __init__(self, h, n_elem, no_neumann, pacnet, device, nb_layers, L=None, mode='thermal', iterator = 'jac'):
         super(MultiGrid, self).__init__()
 
         # Problem parameters
@@ -46,7 +46,10 @@ class MultiGrid(nn.Module):
         self.h = h
         self.n = n_elem # number of grid intervals for finest grid edges
         self.nb_layers = nb_layers
-        self.L = int(np.log2(n_elem)) # number of multigrid levels
+        if(L == None):
+            self.L = int(np.log2(n_elem)) # number of multigrid levels
+        else:
+            self.L = L
         self.pacnet = pacnet
         self.iterator = iterator
         
