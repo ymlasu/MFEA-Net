@@ -93,8 +93,8 @@ def gaussian_random_field(alpha = 3.0,
 
 
 # self-defined function
-def generate_rf(n, a_interval):
-    alpha = random.uniform(0,5)
+def generate_rf(n, a_interval, al_range=[0,5]):
+    alpha = random.uniform(al_range[0], al_range[1])
     a0, a1 = a_interval[0],a_interval[1]
     field = gaussian_random_field(alpha=alpha, size=n, flag_normalize=False)
     f_min, f_max = numpy.min(field), numpy.max(field)

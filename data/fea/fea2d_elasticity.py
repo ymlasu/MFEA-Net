@@ -14,7 +14,7 @@ class ElasticFEM2D():
         self.qpts = np.array([[-1, 1, 1, -1], [-1, -1, 1, 1]])/np.sqrt(3) #[2x4], integration points
         self.n_nodes = grid.points.shape[0]
         self.d = np.zeros(2*self.n_nodes, dtype=np.float32) # x,y components
-        self.f = np.zeros_like(f_val, dtype=np.float32)
+        self.f = np.zeros(2*self.n_nodes, dtype=np.float32) # x,y components
         self.strain = np.zeros((self.n_nodes,3), dtype=np.float32)
         self.stress = np.zeros((self.n_nodes,3), dtype=np.float32)
         self.strain_energy_density = np.zeros((self.n_nodes,), dtype=np.float32)
@@ -72,10 +72,11 @@ class ElasticFEM2D():
         return A, A[np.ix_(self.grid.df_ndirich_valid,self.grid.df_ndirich_valid)], A[np.ix_(self.grid.df_dirich_plus_nonvalid,self.grid.df_ndirich_valid)]
         
         
-    def UpdateBodyForce(self, f_val = None):
+    def UpdateBodyForce(self, f_val):
         '''
         Input: f_val is a 1-D array that contains both x and y degree of freedom
         '''
+        f_val = f_val.reshape(-1)
         for c in self.grid.cells:
             xe = self.grid.points[c,:].T[:2,:] #[2x4]
             for q in self.qpts.T:
@@ -124,19 +125,18 @@ class ElasticFEM2D():
         self.strain_energy_density = 0.5*np.sum(self.strain * self.stress, axis=1)
 
     def NeumannBC(self, bc_val):
-        '''
-        Input: bc_val is a 1-D array that contains both x and y degree of freedom
-        '''
-        for neumann_conn in self.grid.neumann_conn_list:
+        for k, neumann_conn in enumerate(self.grid.neumann_conn_list):
+            neumann_val = bc_val[:,:,(2*k):(2*k+2)].reshape(-1)
             for c in neumann_conn:
                 xe = self.grid.points[c,:][:,:2] #[2x2]
                 le = np.linalg.norm(xe[1,:]-xe[0,:])
                 for q in [1./np.sqrt(3), -1./np.sqrt(3)]:
                     N = 0.5*np.array([1-q, 1+q])
-                    self.f[2*c] += np.dot(N,np.dot(N.T,bc_val[2*c]))*le/2 
-                    self.f[2*c+1] += np.dot(N,np.dot(N.T,bc_val[2*c+1]))*le/2 
+                    self.f[2*c] += np.dot(N,np.dot(N.T,neumann_val[2*c]))*le/2 
+                    self.f[2*c+1] += np.dot(N,np.dot(N.T,neumann_val[2*c+1]))*le/2 
 
     def DirichBC(self, bc_val):
+        bc_val = bc_val.reshape(-1)
         self.d[self.grid.df_nonvalid] = 0.0 # response should be zero at nonvalid nodes
         self.d[self.grid.df_dirich] = bc_val[self.grid.df_dirich]
 
