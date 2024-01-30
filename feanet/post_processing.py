@@ -54,7 +54,7 @@ class ElasticPostProcessing(nn.Module):
         '''Compute stiffness matrix using the E, v field'''
         E = torch.unsqueeze(m[:, 0, :, :], dim=1)
         v = torch.unsqueeze(m[:, 1, :, :], dim=1)
-        if(mode == 'elastic_pstress'):
+        if(mode == 'plane_stress'):
             d11 = (E/(1-v*v)).contiguous()
             d12 = (E*v/(1-v*v)).contiguous()
             d33 = (E/2/(1+v)).contiguous()

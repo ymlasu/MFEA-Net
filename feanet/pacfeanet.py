@@ -62,12 +62,12 @@ class PACFEANet(nn.Module):
         E = torch.unsqueeze(m[:, 0, :, :], dim=1)
         v = torch.unsqueeze(m[:, 1, :, :], dim=1)
 
-        if(self.mode == 'elastic_pstress'):
+        if(self.mode == 'plane_stress'):
             k11 = (E/16./(1-v*v)*(8.-8./3*v)).contiguous()
             k12 = (E/16./(1-v*v)*(-4.-4./3*v)).contiguous()
             k13 = (E/16./(1-v*v)*(-4.+4./3*v)).contiguous()
             k14 = (E/16./(1-v*v)*8./3*v).contiguous()
-        elif(self.mode == 'elastic_pstrain'):
+        elif(self.mode == 'plane_strain'):
             k11 = (E/6./(-1+v+2*v*v)*(-3.+4*v)).contiguous()
             k12 = (E/12./(-1+v+2*v*v)*(3.-2*v)).contiguous()
             k13 = (E/12./(-1+v+2*v*v)*(3.-4*v)).contiguous()
@@ -84,10 +84,10 @@ class PACFEANet(nn.Module):
         E = torch.unsqueeze(m[:, 0, :, :], dim=1)
         v = torch.unsqueeze(m[:, 1, :, :], dim=1)
 
-        if(self.mode == 'elastic_pstress'):
+        if(self.mode == 'plane_stress'):
             k11 = (E/8./(1-v)).contiguous()
             k12 = (E*(1-3*v)/8./(-1+v*v)).contiguous()
-        elif(self.mode == 'elastic_pstrain'):
+        elif(self.mode == 'plane_strain'):
             k11 = (-E/8./(-1+v+2*v*v)).contiguous()
             k12 = (E*(1-4*v)/8./(-1+v+2*v*v)).contiguous()
 
@@ -102,10 +102,10 @@ class PACFEANet(nn.Module):
         E = torch.unsqueeze(m[:, 0, :, :], dim=1)
         v = torch.unsqueeze(m[:, 1, :, :], dim=1)
 
-        if(self.mode == 'elastic_pstress'):
+        if(self.mode == 'plane_stress'):
             k11 = (E/8./(1-v)).contiguous()
             k12 = (E*(1-3*v)/8./(1-v*v)).contiguous()
-        elif(self.mode == 'elastic_pstrain'):
+        elif(self.mode == 'plane_strain'):
             k11 = (-E/8./(-1+v+2*v*v)).contiguous()
             k12 = (E*(-1+4*v)/8./(-1+v+2*v*v)).contiguous()
 
@@ -121,12 +121,12 @@ class PACFEANet(nn.Module):
         E = torch.unsqueeze(m[:, 0, :, :], dim=1)
         v = torch.unsqueeze(m[:, 1, :, :], dim=1)
 
-        if(self.mode == 'elastic_pstress'):
+        if(self.mode == 'plane_stress'):
             k11 = (E*(-3.+v)/6./(-1+v*v)).contiguous()
             k12 = (-E*v/6./(-1+v*v)).contiguous()
             k13 = (E*(3.-v)/12./(-1+v*v)).contiguous()
             k14 = (E*(3.+v)/12./(-1+v*v)).contiguous()
-        elif(self.mode == 'elastic_pstrain'):
+        elif(self.mode == 'plane_strain'):
             k11 = (E/6./(-1+v+2*v*v)*(-3.+4*v)).contiguous()
             k12 = (-E/6./(-1+v+2*v*v)*v).contiguous()
             k13 = (E/12./(-1+v+2*v*v)*(3.-4*v)).contiguous()
@@ -166,7 +166,7 @@ class PACFEANet(nn.Module):
     def calc_KU(self, u, m, nmsk):
         if ((self.K_kernels == None) or (not torch.equal(m, self.materials))):
             stiffness = self.thermal_elements(m)
-            if (self.mode == 'elastic_pstress' or self.mode == 'elastic_pstrain'):
+            if (self.mode == 'plane_stress' or self.mode == 'plane_strain'):
                 stiffness = self.elastic_elements(m) # (bs, 16, 4, h_elem, w_elem)
             self.K_kernels = self.sac_Knet.compute_kernel(stiffness) # (bs, ks, 3, 3, h_node, w_node)
             self.mask = nmsk.unsqueeze(2).unsqueeze(3).repeat(1, 1, 3, 3, 1, 1) # (bs, ku*kf, 3, 3, h_node, w_node)

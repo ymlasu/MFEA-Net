@@ -28,7 +28,7 @@ class JacobiBlock():
         """ Comopute diagonal matrix for Jacobi iteration """
         if(self.mode == 'thermal'):
             d_mat = torch.unsqueeze(self.net.K_kernels[:, 0, 1, 1, :, :], dim=1) # pac K_kernels
-        elif(self.mode == 'elastic_pstress' or self.mode == 'elastic_pstrain'):
+        elif(self.mode == 'plane_stress' or self.mode == 'plane_strain'):
             dxx = self.net.K_kernels[:, 0, 1, 1, :, :] 
             dyy = self.net.K_kernels[:, 3, 1, 1, :, :] 
             d_mat = torch.stack((dxx, dyy), dim=1)
